@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "labellens"
+version = "0.1.0"
+description = "LabelLens - product label compliance intelligence platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.4",
+    "structlog>=24.1",
+    "argon2-cffi>=23.1",
+    "pyotp>=2.9",
+    "python-multipart>=0.0.9",
+    "email-validator>=2.2",
+    "psycopg[binary]>=3.2; platform_python_implementation == 'CPython'",
+    "redis>=5.0",
+    "boto3>=1.34",
+    "pypdf>=5.0",
+    "clamd>=1.0",
+    "pypdfium2>=4.30",
+    "pillow>=10.4",
+    "pillow-heif>=0.18",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
+    "py3langid>=0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+# Not part of `dependencies` or `dev`: paddlepaddle (PaddleOCR's inference
+# engine) publishes no wheel past cp313 as of this writing, so requiring it
+# unconditionally would break installs on newer interpreters. `app/vision/ocr/
+# paddle.py` imports paddleocr lazily inside PaddleOcrEngine.__init__, so the
+# rest of the codebase (and mypy/ruff) is unaffected by this extra being
+# absent; install it explicitly (`pip install ".[ocr]"`, Python <=3.13) to run
+# the `paddleocr`-marked tests for real instead of skipping them.
+ocr = [
+    "paddleocr>=3.7",
+    "paddlepaddle>=3.3",
+]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: fast isolated tests",
+    "integration: tests touching the database",
+    "security: tenant isolation, authz and abuse tests",
+    "postgres: requires a live PostgreSQL (set LABELLENS_TEST_PG_URL)",
+    "object_storage: requires a live S3-compatible endpoint (set LABELLENS_TEST_S3_ENDPOINT)",
+    "clamav: requires a live ClamAV daemon (set LABELLENS_TEST_CLAMD_HOST)",
+    "paddleocr: requires paddleocr/paddlepaddle installed (pip install '.[ocr]', Python <=3.13)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# .venv312 is a throwaway secondary interpreter used only to verify PaddleOCR
+# (unavailable for the primary .venv's Python version) - not part of the source tree.
+extend-exclude = [".venv312"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "C4"]
+ignore = ["S101", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+files = ["app"]
+
+[[tool.mypy.overrides]]
+module = "app.identity.*"
+strict = true

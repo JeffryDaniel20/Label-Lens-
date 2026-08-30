@@ -1,0 +1,74 @@
+# Local development stack. One command brings up everything the API needs.
+name: labellens
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: labellens
+      POSTGRES_PASSWORD: labellens
+      POSTGRES_DB: labellens
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labellens"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: labellens
+      MINIO_ROOT_PASSWORD: labellens-dev-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["miniodata:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 labellens labellens-dev-secret &&
+      mc mb --ignore-existing local/labellens-uploads &&
+      mc anonymous set none local/labellens-uploads"
+
+  api:
+    build:
+      context: ../backend
+    command: >
+      /bin/sh -c "alembic upgrade head &&
+      uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      LABELLENS_ENVIRONMENT: local
+      LABELLENS_DEBUG: "true"
+      LABELLENS_SECRET_KEY: ${LABELLENS_SECRET_KEY:-local-development-secret-key-change-me}
+      LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
+      LABELLENS_REDIS_URL: redis://redis:6379/0
+      LABELLENS_COOKIE_SECURE: "false"
+    volumes: ["../backend:/srv"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  miniodata:
