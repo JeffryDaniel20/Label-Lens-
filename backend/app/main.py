@@ -8,6 +8,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.analysis.router import router as analysis_router
 from app.catalog.router import router as catalog_router
 from app.db import models as _models  # noqa: F401  (registers metadata)
 from app.db.session import get_engine, init_engine
@@ -117,4 +118,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(storage_router)
     app.include_router(ingestion_router)
+    app.include_router(analysis_router)
     return app

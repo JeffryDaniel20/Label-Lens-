@@ -215,3 +215,158 @@ class TestPostgresGuarantees:
         ):
             with pytest.raises(DatabaseError), pg_engine.begin() as conn:
                 conn.execute(text(statement))
+
+    def test_rulesets_and_rules_reject_update_and_delete(self, pg_engine) -> None:
+        """P4-T4: a published ruleset must never be editable, at the
+        database level - not just by application convention (unlike
+        `rulesets`/`rules`, these two tables carry no `organization_id` and
+        no RLS policy at all, since regulatory content is shared across
+        every organization; see app.rules.publish)."""
+        from sqlalchemy.exc import DatabaseError
+
+        ruleset_id = uuid.uuid4()
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO rulesets (id, jurisdiction, category, version,"
+                    " effective_from, source_citations, author, review_date,"
+                    " checksum, published_at)"
+                    " VALUES (:id, 'IN', 'packaged_food', '1.0.0', '2024-01-01',"
+                    " '[]', 'test', '2024-01-01', 'deadbeef', now())"
+                ),
+                {"id": ruleset_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO rules (id, ruleset_id, rule_key, version, title, citation,"
+                    " severity, effective_from, payload)"
+                    " VALUES (:id, :ruleset_id, 'IN-TEST', 1, 't', 'c', 'minor',"
+                    " '2024-01-01', '{}')"
+                ),
+                {"id": uuid.uuid4(), "ruleset_id": ruleset_id},
+            )
+        for statement in (
+            "UPDATE rulesets SET version = '2.0.0'",
+            "DELETE FROM rulesets",
+            "UPDATE rules SET title = 'tampered'",
+            "DELETE FROM rules",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+
+    def test_analysis_events_are_append_only(self, pg_engine) -> None:
+        """P5-T1: state history must be reconstructable from events, which
+        requires events to be genuinely immutable once written - the same
+        `labellens_reject_mutation()` trigger function as `audit_logs`."""
+        from sqlalchemy.exc import DatabaseError
+
+        org_id, product_id, version_id, analysis_id = (uuid.uuid4() for _ in range(4))
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name, slug, retention_days,"
+                    " cloud_ai_enabled, created_at, updated_at)"
+                    " VALUES (:id, 'Org', 'org', 365, true, now(), now())"
+                ),
+                {"id": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO products (id, organization_id, name, internal_sku,"
+                    " created_at, updated_at) VALUES (:id, :org, 'P', 'S1', now(), now())"
+                ),
+                {"id": product_id, "org": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO product_versions (id, organization_id, product_id,"
+                    " version_no, label, status, created_at, updated_at)"
+                    " VALUES (:id, :org, :p, 1, '', 'draft', now(), now())"
+                ),
+                {"id": version_id, "org": org_id, "p": product_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analyses (id, organization_id, product_version_id, state,"
+                    " idempotency_key, started_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'queued', 'x', now(), now(), now())"
+                ),
+                {"id": analysis_id, "org": org_id, "pv": version_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analysis_events (id, analysis_id, organization_id, sequence,"
+                    " to_state, occurred_at) VALUES (:id, :aid, :org, 1, 'queued', now())"
+                ),
+                {"id": uuid.uuid4(), "aid": analysis_id, "org": org_id},
+            )
+        for statement in (
+            "UPDATE analysis_events SET to_state = 'tampered'",
+            "DELETE FROM analysis_events",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+
+    def test_a_terminal_analysis_cannot_be_modified_but_a_live_one_can(self, pg_engine) -> None:
+        """The conditional guarantee P5-T1 actually needs: `analyses` rows
+        legitimately get UPDATEd many times before reaching a terminal
+        state (once per transition), but never again afterward."""
+        from sqlalchemy.exc import DatabaseError
+
+        org_id, product_id, version_id, analysis_id = (uuid.uuid4() for _ in range(4))
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name, slug, retention_days,"
+                    " cloud_ai_enabled, created_at, updated_at)"
+                    " VALUES (:id, 'Org', 'org', 365, true, now(), now())"
+                ),
+                {"id": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO products (id, organization_id, name, internal_sku,"
+                    " created_at, updated_at) VALUES (:id, :org, 'P', 'S1', now(), now())"
+                ),
+                {"id": product_id, "org": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO product_versions (id, organization_id, product_id,"
+                    " version_no, label, status, created_at, updated_at)"
+                    " VALUES (:id, :org, :p, 1, '', 'draft', now(), now())"
+                ),
+                {"id": version_id, "org": org_id, "p": product_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analyses (id, organization_id, product_version_id, state,"
+                    " idempotency_key, started_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'queued', 'x', now(), now(), now())"
+                ),
+                {"id": analysis_id, "org": org_id, "pv": version_id},
+            )
+
+        # Non-terminal: an ordinary state-transition UPDATE succeeds.
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE analyses SET state = 'validating' WHERE id = :id"),
+                {"id": analysis_id},
+            )
+            state = conn.execute(
+                text("SELECT state FROM analyses WHERE id = :id"), {"id": analysis_id}
+            ).scalar()
+            assert state == "validating"
+
+        # Reaching a terminal state, then any further UPDATE/DELETE is rejected.
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE analyses SET state = 'completed' WHERE id = :id"),
+                {"id": analysis_id},
+            )
+        for statement in (
+            "UPDATE analyses SET state = 'queued' WHERE id = :id",
+            "DELETE FROM analyses WHERE id = :id",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement), {"id": analysis_id})

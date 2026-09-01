@@ -44,6 +44,8 @@ class AuditAction(enum.StrEnum):
     PRODUCT_VERSION_LOCKED = "product_version.locked"
     FILE_UPLOADED = "file.uploaded"
     FILE_REJECTED = "file.rejected"
+    ANALYSIS_SUBMITTED = "analysis.submitted"
+    ANALYSIS_CANCELLED = "analysis.cancelled"
 
 
 class AuditLog(UUIDPrimaryKey, Base):

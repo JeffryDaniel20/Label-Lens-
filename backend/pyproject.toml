@@ -30,6 +30,8 @@ dependencies = [
     "opencv-python-headless>=4.10",
     "numpy>=1.26",
     "py3langid>=0.3",
+    "pyyaml>=6.0",
+    "arq>=0.26",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +67,7 @@ markers = [
     "object_storage: requires a live S3-compatible endpoint (set LABELLENS_TEST_S3_ENDPOINT)",
     "clamav: requires a live ClamAV daemon (set LABELLENS_TEST_CLAMD_HOST)",
     "paddleocr: requires paddleocr/paddlepaddle installed (pip install '.[ocr]', Python <=3.13)",
+    "redis: requires a live Redis server (set LABELLENS_TEST_REDIS_URL)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
 
