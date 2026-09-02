@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from app.analysis.models import Analysis, AnalysisEvent
+from app.analysis.models import Analysis, AnalysisEvent, DeadLetterJob
 from app.audit.models import AuditLog
 from app.catalog.models import File, FilePage, Product, ProductVersion
 from app.db.base import Base
+from app.extraction.models import ExtractedField, Extraction
 from app.identity.models import ApiKey, Membership, Organization, RecoveryCode, User
 from app.rules.models import RuleRow, Ruleset
 from app.vision.models import OcrResult, OcrTokenRow
@@ -24,6 +25,9 @@ TENANT_TABLES: tuple[str, ...] = (
     "ocr_tokens",
     "analyses",
     "analysis_events",
+    "dead_letter_jobs",
+    "extractions",
+    "extracted_fields",
     "audit_logs",
 )
 
@@ -34,6 +38,9 @@ __all__ = [
     "AnalysisEvent",
     "ApiKey",
     "AuditLog",
+    "DeadLetterJob",
+    "ExtractedField",
+    "Extraction",
     "File",
     "FilePage",
     "Membership",

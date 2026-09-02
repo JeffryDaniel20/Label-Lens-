@@ -63,6 +63,12 @@ services:
       LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
       LABELLENS_REDIS_URL: redis://redis:6379/0
       LABELLENS_COOKIE_SECURE: "false"
+      # Passed through from the host environment or infra/.env - never
+      # hard-coded here, since this file is committed.
+      LABELLENS_LLM_PROVIDER: ${LABELLENS_LLM_PROVIDER:-gemini}
+      LABELLENS_LLM_API_KEY: ${LABELLENS_LLM_API_KEY:-}
+      LABELLENS_LLM_MODEL: ${LABELLENS_LLM_MODEL:-gemini-3.8-flash}
+      LABELLENS_LLM_ESCALATION_MODEL: ${LABELLENS_LLM_ESCALATION_MODEL:-gemini-3.8-flash}
     volumes: ["../backend:/srv"]
     ports: ["8000:8000"]
     depends_on:

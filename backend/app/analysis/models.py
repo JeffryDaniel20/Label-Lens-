@@ -71,6 +71,13 @@ class ConfidenceTier(enum.StrEnum):
     LOW = "low"
 
 
+class DeadLetterReason(enum.StrEnum):
+    STAGE_EXHAUSTED = "stage_exhausted"
+    PERMANENT_ERROR = "permanent_error"
+    TIMEOUT = "timeout"
+    STALLED = "stalled"
+
+
 class Analysis(UUIDPrimaryKey, TimestampMixin, Base):
     __tablename__ = "analyses"
     __table_args__ = (
@@ -107,6 +114,13 @@ class Analysis(UUIDPrimaryKey, TimestampMixin, Base):
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
+    # Cost accounting (P5-T5): summed across every stage's provider call via
+    # `app.analysis.costs.record_stage_cost` - IMPLEMENTATION.md §14/§28's
+    # "costs are recorded per stage (tokens, provider, cents) on the
+    # analysis row" taken literally rather than as a separate ledger table.
+    total_tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class AnalysisEvent(UUIDPrimaryKey, Base):
@@ -137,3 +151,32 @@ class AnalysisEvent(UUIDPrimaryKey, Base):
     correlation_id: Mapped[str | None] = mapped_column(String(64), default=None)
     worker_id: Mapped[str | None] = mapped_column(String(100), default=None)
     reason: Mapped[str | None] = mapped_column(String(500), default=None)
+
+
+class DeadLetterJob(UUIDPrimaryKey, TimestampMixin, Base):
+    """A stage job that will not be automatically retried further (P5-T3):
+    either its retries were exhausted, it failed permanently, it exceeded
+    the whole-analysis time budget, or the janitor reaped it as stalled.
+    This row *is* the alert signal for now - a real notification channel
+    (P7-T5) can be layered on top of "a new row appeared here" without any
+    change to how it's written."""
+
+    __tablename__ = "dead_letter_jobs"
+    __table_args__ = (
+        Index("ix_dead_letter_jobs_org_analysis", "organization_id", "analysis_id"),
+    )
+
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    stage: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[DeadLetterReason] = mapped_column(enum_column(DeadLetterReason), nullable=False)
+    error_message: Mapped[str] = mapped_column(String(2000), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    replayed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    replayed_as_analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analyses.id", ondelete="SET NULL"), default=None
+    )

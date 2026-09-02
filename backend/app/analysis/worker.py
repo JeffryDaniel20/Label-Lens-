@@ -22,9 +22,17 @@ change is always reconstructable after the fact.
 **Graceful shutdown**: Arq's own signal handling (`handle_signals=True`,
 the default) and `job_completion_wait` give an in-flight job time to finish
 - and commit - before the process actually exits on SIGTERM/SIGINT, rather
-than being killed mid-transaction. Real per-stage timeouts, exception-class-
-specific retry policy, and a dead-letter queue are P5-T3's job, layered on
-top of this.
+than being killed mid-transaction.
+
+**Retries, timeouts, DLQ, and the janitor (P5-T3)** are layered on top of
+the P5-T2 mechanism above without changing it: `run_analysis_stage` itself
+now classifies a stage function's exception (`app.analysis.retry_policy`),
+enforces the whole-analysis time budget before attempting the next stage,
+and records a `DeadLetterJob` (`app.analysis.dlq`) whenever it gives up
+automatically retrying. `WorkerSettings.cron_jobs` schedules
+`app.analysis.janitor.reap_stalled_analyses_job` to catch the case this
+worker-level logic structurally cannot: an analysis whose *next* job never
+arrives at all (lost from the queue, not just a job that failed).
 
 Queue names follow IMPLEMENTATION.md §16: `default`, `ocr` (CPU-heavy, low
 concurrency), `llm` (I/O-bound, higher concurrency) - `QUEUE_FOR_STAGE`
@@ -38,11 +46,18 @@ import os
 import uuid
 from typing import Any
 
+from arq import cron
 from arq.connections import ArqRedis, RedisSettings, create_pool
+from arq.worker import Retry
+from sqlalchemy.orm import Session
 
-from app.analysis import service
-from app.analysis.models import AnalysisState
+from app.analysis import retry_policy, service
+from app.analysis.dlq import record_dead_letter
+from app.analysis.janitor import reap_stalled_analyses_job
+from app.analysis.models import Analysis, AnalysisState, DeadLetterReason
+from app.analysis.retry_policy import PermanentStageError, TransientStageError
 from app.analysis.stages import STOPPING_STATES, advance_analysis
+from app.analysis.state_machine import transition
 from app.db.session import get_session_factory, init_engine, set_tenant_context
 from app.platform.config import Settings, get_settings
 
@@ -60,10 +75,55 @@ def queue_for_state(state: AnalysisState) -> str:
     return QUEUE_FOR_STAGE.get(state, QUEUE_DEFAULT)
 
 
+def _fail_and_dead_letter(
+    db: Session,
+    analysis: Analysis,
+    *,
+    worker_id: str,
+    reason: str,
+    error_message: str,
+    retryable: bool,
+    attempt: int,
+    dlq_reason: DeadLetterReason,
+) -> AnalysisState:
+    """Shared tail of every give-up path: transition to `failed`, record the
+    dead letter, return the resulting state. `analysis.state` (the stage
+    that was actually running) is captured *before* the transition."""
+    failed_stage = analysis.state.value
+    transition(
+        db,
+        analysis,
+        AnalysisState.FAILED,
+        worker_id=worker_id,
+        reason=reason,
+        failure_stage=failed_stage,
+        retryable=retryable,
+    )
+    record_dead_letter(
+        db,
+        analysis=analysis,
+        stage=failed_stage,
+        reason=dlq_reason,
+        error_message=error_message,
+        attempt_count=attempt,
+    )
+    return analysis.state
+
+
 async def run_analysis_stage(ctx: dict[str, Any], analysis_id: str, organization_id: str) -> str:
     """The one Arq task this worker runs: advance `analysis_id` by exactly
     one stage, commit, and chain to the next stage's job unless the
-    analysis has stopped. Returns the resulting state's value."""
+    analysis has stopped. Returns the resulting state's value.
+
+    **Retry/DLQ policy (P5-T3):** a stage function may raise
+    `TransientStageError` (retried up to `retry_policy.MAX_STAGE_ATTEMPTS`
+    times with backoff+jitter, via Arq's own `Retry`, then dead-lettered as
+    still-`retryable`) or `PermanentStageError` (dead-lettered immediately,
+    never automatically retried). Anything else propagates unclassified, the
+    same as P5-T2 - Arq's own `max_tries` still applies as the backstop.
+    Separately, an analysis that has been running longer than
+    `retry_policy.ANALYSIS_BUDGET_SECONDS` is force-failed as a timeout
+    before its next stage is even attempted."""
     session_factory = get_session_factory()
     db = session_factory()
     try:
@@ -72,7 +132,48 @@ async def run_analysis_stage(ctx: dict[str, Any], analysis_id: str, organization
         analysis = service.get_analysis(
             db, organization_id=org_uuid, analysis_id=uuid.UUID(analysis_id)
         )
-        new_state = advance_analysis(db, analysis, worker_id=str(ctx.get("job_id", "")))
+        worker_id = str(ctx.get("job_id", ""))
+
+        if analysis.state not in STOPPING_STATES and retry_policy.is_budget_exceeded(
+            analysis.started_at
+        ):
+            new_state = _fail_and_dead_letter(
+                db,
+                analysis,
+                worker_id=worker_id,
+                reason="Exceeded the whole-analysis time budget.",
+                error_message=(
+                    f"Analysis exceeded its {retry_policy.ANALYSIS_BUDGET_SECONDS}s "
+                    "whole-pipeline budget."
+                ),
+                retryable=False,
+                attempt=1,
+                dlq_reason=DeadLetterReason.TIMEOUT,
+            )
+            db.commit()
+            return new_state.value
+
+        try:
+            new_state = advance_analysis(db, analysis, worker_id=worker_id)
+        except (TransientStageError, PermanentStageError) as exc:
+            attempt = int(ctx.get("job_try", 1))
+            if isinstance(exc, TransientStageError) and attempt < retry_policy.MAX_STAGE_ATTEMPTS:
+                db.rollback()
+                raise Retry(defer=retry_policy.backoff_seconds(attempt)) from exc
+            new_state = _fail_and_dead_letter(
+                db,
+                analysis,
+                worker_id=worker_id,
+                reason=str(exc),
+                error_message=str(exc),
+                retryable=isinstance(exc, TransientStageError),
+                attempt=attempt,
+                dlq_reason=(
+                    DeadLetterReason.STAGE_EXHAUSTED
+                    if isinstance(exc, TransientStageError)
+                    else DeadLetterReason.PERMANENT_ERROR
+                ),
+            )
         db.commit()
     except Exception:
         db.rollback()
@@ -146,6 +247,10 @@ class WorkerSettings:
     """
 
     functions = (run_analysis_stage,)
+    # Every minute: cheap (an indexed state filter over `analyses`) and the
+    # budget itself is measured in minutes, so sub-minute reaping precision
+    # buys nothing.
+    cron_jobs = (cron(reap_stalled_analyses_job, minute=set(range(60))),)
     queue_name = QUEUE_DEFAULT
     redis_settings = _worker_redis_settings_from_env()
     on_startup = _on_startup

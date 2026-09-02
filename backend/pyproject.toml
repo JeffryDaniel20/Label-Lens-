@@ -32,6 +32,7 @@ dependencies = [
     "py3langid>=0.3",
     "pyyaml>=6.0",
     "arq>=0.26",
+    "google-genai>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,7 @@ markers = [
     "clamav: requires a live ClamAV daemon (set LABELLENS_TEST_CLAMD_HOST)",
     "paddleocr: requires paddleocr/paddlepaddle installed (pip install '.[ocr]', Python <=3.13)",
     "redis: requires a live Redis server (set LABELLENS_TEST_REDIS_URL)",
+    "llm: requires a live LLM provider credential (set LABELLENS_LLM_API_KEY)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
 

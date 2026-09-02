@@ -132,6 +132,13 @@ class TestRunAnalysisStageChaining:
 
     def test_reaching_a_stopping_state_does_not_enqueue_anything(self, db, monkeypatch) -> None:
         org, analysis = _make_analysis(db)
+        # `extracting` is a real stage now (P3-T5) and would fail here for
+        # want of a provider credential. This test is about queue chaining
+        # and stopping states, not about extraction, so it is stubbed back
+        # to a no-op - extraction has its own suite.
+        monkeypatch.setitem(
+            STAGE_FUNCTIONS, AnalysisState.EXTRACTING, lambda db, analysis: None
+        )
         # 8 calls: queued->validating->preprocessing->ocr->extracting->
         # normalizing->classifying->rule_eval->scoring - drives it all the
         # way to `scoring` so the *next* call reaches `completed`.

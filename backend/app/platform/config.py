@@ -66,6 +66,35 @@ class Settings(BaseSettings):
     clamd_host: str = ""
     clamd_port: int = 3310
 
+    # --- LLM extraction (D-06: Gemini, reached through a neutral adapter) ---
+    # Deliberately provider-neutral names: the extraction step is an adapter
+    # behind `app/extraction/llm/base.py::ExtractionProvider`, so swapping
+    # vendors is a config change, not a rename across the codebase - the same
+    # posture that keeps `storage_*` vendor-neutral for D-02.
+    llm_provider: Literal["gemini", "null"] = "gemini"
+    # Empty key means no provider is configured; extraction fails explicitly
+    # rather than silently returning empty facts - see app/extraction/llm/.
+    llm_api_key: str = ""
+    # Pinned deliberately rather than using a floating alias like
+    # `gemini-flash-latest`: this is a compliance product whose whole
+    # reproducibility story (model manifests, pinned rulesets, byte-identical
+    # re-evaluation) depends on the same inputs producing the same facts a
+    # year later. A self-updating model would silently break that.
+    llm_model: str = "gemini-3.8-flash"
+    # Used only after a schema-validation repair retry has already failed
+    # (IMPLEMENTATION.md §8 step 6: "on second failure, escalate model tier").
+    # Pointed at the *same* Flash model on purpose: verified 2026-09-02 that
+    # every Pro-tier model returns "exceeded your current quota" without
+    # billing enabled, so escalating there would guarantee a failed third
+    # attempt where a plain retry may still succeed. With billing enabled,
+    # set this to a Pro model to restore genuine tier escalation.
+    llm_escalation_model: str = "gemini-3.8-flash"
+    llm_timeout_seconds: int = 90
+    llm_max_output_tokens: int = 8192
+    # Extraction must be as close to deterministic as the provider allows:
+    # the same label should not yield different facts run to run.
+    llm_temperature: float = 0.0
+
     @field_validator("secret_key")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

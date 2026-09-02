@@ -14,6 +14,8 @@ from app.analysis.stages import (
     STAGE_SEQUENCE,
     STOPPING_STATES,
     advance_analysis,
+    progress_percentage,
+    progress_percentage_for_state,
 )
 from app.catalog.models import File, FileStatus, Product, ProductVersion
 from tests.conftest import make_org
@@ -257,3 +259,71 @@ class TestCheckpointingAndResumption:
             AnalysisState.VALIDATING,
             AnalysisState.PREPROCESSING,
         ]
+
+
+class TestProgressPercentage:
+    def test_queued_is_zero_and_completed_is_a_hundred(self) -> None:
+        assert progress_percentage_for_state(AnalysisState.QUEUED) == 0
+        assert progress_percentage_for_state(AnalysisState.COMPLETED) == 100
+
+    def test_percentage_increases_monotonically_through_the_pipeline(self) -> None:
+        states = (
+            AnalysisState.QUEUED,
+            *STAGE_SEQUENCE,
+            AnalysisState.COMPLETED,
+        )
+        percentages = [progress_percentage_for_state(s) for s in states]
+        assert percentages == sorted(percentages)
+        assert len(set(percentages)) == len(percentages)  # each stage is distinct
+
+    def test_needs_review_and_review_report_the_same_percentage_as_scoring(self) -> None:
+        scoring = progress_percentage_for_state(AnalysisState.SCORING)
+        assert progress_percentage_for_state(AnalysisState.NEEDS_REVIEW) == scoring
+        assert progress_percentage_for_state(AnalysisState.REVIEW) == scoring
+
+    def test_a_bare_failed_or_cancelled_state_reports_zero(self) -> None:
+        assert progress_percentage_for_state(AnalysisState.FAILED) == 0
+        assert progress_percentage_for_state(AnalysisState.CANCELLED) == 0
+
+    def test_a_failed_analysis_reports_how_far_it_got(self, db, analysis) -> None:
+        advance_analysis(db, analysis)  # queued -> validating
+        db.commit()
+        advance_analysis(db, analysis)  # validating -> preprocessing
+        db.commit()
+        from app.analysis.state_machine import transition
+
+        transition(
+            db, analysis, AnalysisState.FAILED, failure_stage="preprocessing", retryable=False
+        )
+        db.commit()
+
+        assert progress_percentage(analysis) == progress_percentage_for_state(
+            AnalysisState.PREPROCESSING
+        )
+        assert progress_percentage(analysis) != 0
+
+    def test_a_cancelled_analysis_reports_zero_no_failure_stage_recorded(
+        self, db, analysis
+    ) -> None:
+        advance_analysis(db, analysis)  # queued -> validating
+        db.commit()
+        from app.analysis.state_machine import transition
+
+        transition(db, analysis, AnalysisState.CANCELLED)
+        db.commit()
+
+        assert analysis.failure_stage is None
+        assert progress_percentage(analysis) == 0
+
+    def test_an_unrecognized_failure_stage_string_falls_back_safely(self, db, analysis) -> None:
+        # Defensive branch: `failure_stage` is always a real `AnalysisState`
+        # value in practice (`transition()` sets it from `from_state.value`),
+        # but `progress_percentage` must not crash if that ever isn't true.
+        from app.analysis.state_machine import transition
+
+        transition(db, analysis, AnalysisState.FAILED, failure_stage="not_a_real_state")
+        db.commit()
+
+        assert progress_percentage(analysis) == progress_percentage_for_state(
+            AnalysisState.FAILED
+        )

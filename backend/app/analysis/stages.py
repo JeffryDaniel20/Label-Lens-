@@ -12,17 +12,25 @@ already done gets redone. If a stage's own function raises before completing,
 the transition never happens and the analysis stays exactly where it was -
 retrying re-attempts only that one stage, not the ones before it.
 
-The functions registered here for `ocr`/`extracting`/`normalizing`/
-`classifying`/`rule_eval` are honest placeholders, not real pipeline logic:
+`extracting` is real (P3-T5): it calls the configured LLM provider through
+`app/extraction/`. The rest are still honest placeholders, not real pipeline
+logic:
 
 - `ocr` needs a real PaddleOCR call. P3-T2's adapter exists and is proven,
   but only in a second Python 3.12 virtualenv - the interpreter this worker
-  would actually run under has no compatible `paddlepaddle` wheel.
-- `extracting` needs P3-T5 (LLM extraction), blocked on a missing
-  `ANTHROPIC_API_KEY`.
-- `normalizing`/`classifying`/`rule_eval` are themselves downstream of
-  `extracting`'s output - there are no facts to normalize, classify, or
-  evaluate against without a real extraction to work from.
+  would actually run under has no compatible `paddlepaddle` wheel. (The
+  deployed image *is* `python:3.12-slim`, so this is a local-environment
+  gap rather than a production one.)
+- `normalizing`/`classifying`/`rule_eval` are downstream of `extracting`'s
+  output. Their libraries all exist and are tested (P3-T7, P3-T9, P4-T3);
+  what they still need is wiring, plus - for `rule_eval` - a real published
+  ruleset, which waits on D-01.
+
+Note on cost: `_extracting` records the provider's reported **token** usage
+via P5-T5's `record_stage_cost`, but not cents - converting tokens to money
+needs a per-model price table that changes independently of this codebase.
+`total_cost_cents` therefore stays 0 until that table exists; tokens are
+recorded truthfully rather than money being estimated.
 
 What P5-T2 is responsible for is that the queue correctly drives whatever
 function *is* registered for a state, retries it, checkpoints past it, and
@@ -86,16 +94,113 @@ def _placeholder(db: Session, analysis: Analysis) -> AnalysisState | None:
     return None
 
 
+def _extracting(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Real LLM extraction (P3-T5), reached through the provider-neutral
+    adapter selected by `LABELLENS_LLM_PROVIDER` (D-06).
+
+    Failure classification is deliberate, and uses P5-T3's vocabulary:
+
+    - a missing provider/credential, or an extraction that never satisfied
+      the schema, is `PermanentStageError` - retrying the same input against
+      the same configuration cannot succeed, so it dead-letters immediately
+      rather than burning three attempts' worth of tokens;
+    - a provider transport failure (rate limit, timeout, 5xx) is
+      `TransientStageError` and retries with backoff.
+
+    Provider spend is recorded on the analysis (P5-T5) *before* the
+    transition, so a run's cost is durable even for an extraction that later
+    fails a downstream stage.
+    """
+    from app.analysis.costs import record_stage_cost  # noqa: PLC0415 - avoids an import cycle
+    from app.analysis.retry_policy import PermanentStageError, TransientStageError
+    from app.extraction import llm as llm_module
+    from app.extraction import service as extraction_service
+    from app.platform.config import get_settings
+
+    settings = get_settings()
+    try:
+        provider = llm_module.build_provider(settings)
+    except llm_module.ProviderNotConfigured as exc:
+        raise PermanentStageError(str(exc)) from exc
+
+    try:
+        outcome = extraction_service.extract_for_analysis(
+            db,
+            provider=provider,
+            organization_id=analysis.organization_id,
+            analysis_id=analysis.id,
+            product_version_id=analysis.product_version_id,
+            model=settings.llm_model,
+            escalation_model=settings.llm_escalation_model,
+        )
+    except extraction_service.ExtractionFailed as exc:
+        raise PermanentStageError(str(exc)) from exc
+    except llm_module.ProviderError as exc:
+        raise TransientStageError(str(exc)) from exc
+
+    record_stage_cost(
+        db,
+        analysis,
+        stage=AnalysisState.EXTRACTING.value,
+        provider=provider.name,
+        tokens_in=outcome.tokens_in,
+        tokens_out=outcome.tokens_out,
+    )
+    return None
+
+
 STAGE_FUNCTIONS: dict[AnalysisState, StageFn] = {
     AnalysisState.VALIDATING: _placeholder,
     AnalysisState.PREPROCESSING: _placeholder,
     AnalysisState.OCR: _placeholder,
-    AnalysisState.EXTRACTING: _placeholder,
+    AnalysisState.EXTRACTING: _extracting,
     AnalysisState.NORMALIZING: _placeholder,
     AnalysisState.CLASSIFYING: _placeholder,
     AnalysisState.RULE_EVAL: _placeholder,
     AnalysisState.SCORING: _placeholder,
 }
+
+
+# Progress reporting (P5-T5): `queued` through `completed` in pipeline
+# order, each step worth an equal share - crude but honest given the real
+# per-stage bodies (OCR, extraction) don't exist yet to weight by actual
+# duration.
+_PROGRESS_SEQUENCE: tuple[AnalysisState, ...] = (
+    AnalysisState.QUEUED,
+    *STAGE_SEQUENCE,
+    AnalysisState.COMPLETED,
+)
+
+
+def progress_percentage_for_state(state: AnalysisState) -> int:
+    """0-100 for a single state, with no notion of *how* an analysis got
+    there - `needs_review`/`review` count as `scoring` (the automated
+    pipeline's own work is done; what's left is a human, not another
+    stage). A bare `failed`/`cancelled` (no more specific stage known)
+    reports 0 rather than guessing."""
+    if state in (AnalysisState.NEEDS_REVIEW, AnalysisState.REVIEW):
+        state = AnalysisState.SCORING
+    try:
+        index = _PROGRESS_SEQUENCE.index(state)
+    except ValueError:
+        return 0
+    return round(index / (len(_PROGRESS_SEQUENCE) - 1) * 100)
+
+
+def progress_percentage(analysis: Analysis) -> int:
+    """0-100 for a whole `Analysis`. `failed` reports how far the pipeline
+    actually got (`failure_stage`, always set by `transition()` for a
+    `failed` outcome) rather than 100%, which would misleadingly read as
+    success. `cancelled` never carries a `failure_stage` (that field is
+    `failed`-specific, see `state_machine.transition`) and reports 0%
+    rather than guessing how far a manually-cancelled run had gotten."""
+    state = analysis.state
+    if state in (AnalysisState.FAILED, AnalysisState.CANCELLED) and analysis.failure_stage:
+        try:
+            state = AnalysisState(analysis.failure_stage)
+        except ValueError:
+            pass
+    return progress_percentage_for_state(state)
 
 
 def advance_analysis(
