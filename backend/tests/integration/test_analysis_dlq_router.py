@@ -162,6 +162,28 @@ class TestReplayDeadLetter:
         assert body["id"] != analysis_id
         assert body["state"] == "queued"
 
+    def test_replay_enqueues_the_new_analysiss_first_job(
+        self, owner: ApiSession, dead_letter
+    ) -> None:
+        """Found live, 2026-09-04: a replay originally created a fresh
+        `queued` row and left it there forever, unlike `submit_analysis` -
+        this is the regression test for that fix."""
+        from tests.integration.test_analysis_router import _FakeArqPool
+
+        _analysis_id, dead_letter_id = dead_letter
+        pool = _FakeArqPool()
+        owner.client.app.state.arq_pool = pool
+
+        response = owner.post(f"/v1/analyses/dead-letters/{dead_letter_id}/replay")
+
+        assert response.status_code == 200
+        new_analysis_id = response.json()["id"]
+        assert len(pool.calls) == 1
+        function, args, kwargs = pool.calls[0]
+        assert function == "run_analysis_stage"
+        assert args == (new_analysis_id, owner.org_id)
+        assert kwargs["_queue_name"] == "default"
+
     def test_replaying_twice_is_a_conflict(self, owner: ApiSession, dead_letter) -> None:
         _analysis_id, dead_letter_id = dead_letter
         owner.post(f"/v1/analyses/dead-letters/{dead_letter_id}/replay")

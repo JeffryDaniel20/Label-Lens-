@@ -30,7 +30,7 @@ from app.analysis.worker import (
     enqueue_first_stage,
     run_analysis_stage,
 )
-from app.catalog.models import File, FileStatus, Product, ProductVersion
+from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
 from app.platform.config import get_settings
 from tests.conftest import make_org
 
@@ -50,16 +50,23 @@ def _make_analysis(db):
     version = ProductVersion(organization_id=org.id, product_id=product.id, version_no=1)
     db.add(version)
     db.flush()
+    file = File(
+        organization_id=org.id,
+        product_version_id=version.id,
+        storage_key="k",
+        original_filename="f.jpg",
+        sha256="a" * 64,
+        mime="image/jpeg",
+        bytes=1,
+        status=FileStatus.READY,
+    )
+    db.add(file)
+    db.flush()
+    # `_validating` (real - see app.analysis.stages's module docstring)
+    # needs a rasterized page to find.
     db.add(
-        File(
-            organization_id=org.id,
-            product_version_id=version.id,
-            storage_key="k",
-            original_filename="f.jpg",
-            sha256="a" * 64,
-            mime="image/jpeg",
-            bytes=1,
-            status=FileStatus.READY,
+        FilePage(
+            organization_id=org.id, file_id=file.id, page_no=1, width=10, height=10, render_key="r"
         )
     )
     db.flush()
@@ -101,6 +108,24 @@ async def _enqueue_first(analysis_id: str, organization_id: str) -> None:
 
 
 class TestRealArqWiring:
+    @pytest.fixture(autouse=True)
+    def _stub_ocr_content(self, monkeypatch):
+        """This module proves the real Arq/Redis wiring - job registration,
+        queue routing, `on_startup`/`on_shutdown` - not any individual
+        stage's own content (each has its own dedicated suite). `_ocr` is
+        real now and would need a live PaddleOCR engine (unavailable in the
+        Python 3.14 interpreter this test suite runs under - see
+        `app/vision/ocr/paddle.py`) plus a real rendered page in object
+        storage, neither of which this file sets up. `STAGE_FUNCTIONS` is
+        plain module state shared with whatever Arq `Worker` this test
+        constructs (same process, same event loop - Windows Arq runs
+        in-process, not a subprocess), so patching it here genuinely reaches
+        the real worker's `advance_analysis` calls below.
+        """
+        from app.analysis.stages import STAGE_FUNCTIONS
+
+        monkeypatch.setitem(STAGE_FUNCTIONS, AnalysisState.OCR, lambda db, analysis: None)
+
     def test_a_burst_worker_chains_through_every_default_queue_stage(self, db) -> None:
         org, analysis = _make_analysis(db)
         asyncio.run(_enqueue_first(str(analysis.id), str(org.id)))

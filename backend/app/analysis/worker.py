@@ -36,8 +36,11 @@ arrives at all (lost from the queue, not just a job that failed).
 
 Queue names follow IMPLEMENTATION.md §16: `default`, `ocr` (CPU-heavy, low
 concurrency), `llm` (I/O-bound, higher concurrency) - `QUEUE_FOR_STAGE`
-picks which one a given stage's job belongs on, so a worker process can be
-scaled/configured per queue once the real OCR/LLM stage bodies exist.
+picks which one a given stage's job belongs on. Both the OCR (P3-T2/this
+vertical-slice wiring) and LLM (P3-T5) stage bodies are real now, so a
+production deployment can genuinely run separate worker processes per queue,
+sized independently - a CPU-bound PaddleOCR pool and an I/O-bound Gemini
+pool have very different concurrency sweet spots.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from app.analysis.models import Analysis, AnalysisState, DeadLetterReason
 from app.analysis.retry_policy import PermanentStageError, TransientStageError
 from app.analysis.stages import STOPPING_STATES, advance_analysis
 from app.analysis.state_machine import transition
+from app.db import models as _models  # noqa: F401 - registers every mapped table's metadata
 from app.db.session import get_session_factory, init_engine, set_tenant_context
 from app.platform.config import Settings, get_settings
 
@@ -196,15 +200,25 @@ async def enqueue_first_stage(
     pool: ArqRedis, *, analysis_id: str, organization_id: str
 ) -> None:
     """Enqueue the very first stage job for a newly-created (`queued`)
-    analysis. Not yet called from `app.analysis.router` - submission and
-    worker dispatch are wired together once this queue has a real stage to
-    hand work to; see `app.analysis.stages`'s module docstring."""
+    analysis. Called from `app.analysis.router.submit_analysis` via the
+    app-lifecycle-managed pool in `app.state.arq_pool`."""
     await pool.enqueue_job(
         "run_analysis_stage", analysis_id, organization_id, _queue_name=QUEUE_DEFAULT
     )
 
 
 async def _on_startup(ctx: dict[str, Any]) -> None:
+    """Called once when this worker process starts.
+
+    A standalone `arq app.analysis.worker.WorkerSettings` process never
+    imports `app.main`, which is normally what pulls in `app.db.models` (the
+    module that imports every mapped table so SQLAlchemy's registry can
+    resolve cross-table foreign keys) - hence this module's own top-level
+    `from app.db import models as _models` import. Found the hard way, live:
+    without it, the very first real flush touching `analyses` raises
+    `NoReferencedTableError` trying to resolve `ruleset_version_id`'s FK to
+    `rulesets`, a table this process had genuinely never heard of.
+    """
     settings = get_settings()
     init_engine(settings.database_url)
 

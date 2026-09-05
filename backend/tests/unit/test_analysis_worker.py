@@ -28,7 +28,7 @@ from app.analysis.worker import (
     queue_for_state,
     run_analysis_stage,
 )
-from app.catalog.models import File, FileStatus, Product, ProductVersion
+from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
 from tests.conftest import make_org
 
 pytestmark = pytest.mark.unit
@@ -50,16 +50,23 @@ def _make_analysis(db):
     version = ProductVersion(organization_id=org.id, product_id=product.id, version_no=1)
     db.add(version)
     db.flush()
+    file = File(
+        organization_id=org.id,
+        product_version_id=version.id,
+        storage_key="k",
+        original_filename="f.jpg",
+        sha256="a" * 64,
+        mime="image/jpeg",
+        bytes=1,
+        status=FileStatus.READY,
+    )
+    db.add(file)
+    db.flush()
+    # `_validating` (real - see app.analysis.stages's module docstring)
+    # needs a rasterized page to find.
     db.add(
-        File(
-            organization_id=org.id,
-            product_version_id=version.id,
-            storage_key="k",
-            original_filename="f.jpg",
-            sha256="a" * 64,
-            mime="image/jpeg",
-            bytes=1,
-            status=FileStatus.READY,
+        FilePage(
+            organization_id=org.id, file_id=file.id, page_no=1, width=10, height=10, render_key="r"
         )
     )
     db.flush()
@@ -132,13 +139,18 @@ class TestRunAnalysisStageChaining:
 
     def test_reaching_a_stopping_state_does_not_enqueue_anything(self, db, monkeypatch) -> None:
         org, analysis = _make_analysis(db)
-        # `extracting` is a real stage now (P3-T5) and would fail here for
-        # want of a provider credential. This test is about queue chaining
-        # and stopping states, not about extraction, so it is stubbed back
-        # to a no-op - extraction has its own suite.
-        monkeypatch.setitem(
-            STAGE_FUNCTIONS, AnalysisState.EXTRACTING, lambda db, analysis: None
-        )
+        # `ocr`, `extracting`, `normalizing`, and `classifying` are all real
+        # stages now and would fail here for want of a live OCR engine/LLM
+        # credential/real extraction to normalize. This test is about queue
+        # chaining and stopping states, not any stage's own content, so they
+        # are stubbed back to no-ops - each has its own dedicated suite.
+        for state in (
+            AnalysisState.OCR,
+            AnalysisState.EXTRACTING,
+            AnalysisState.NORMALIZING,
+            AnalysisState.CLASSIFYING,
+        ):
+            monkeypatch.setitem(STAGE_FUNCTIONS, state, lambda db, analysis: None)
         # 8 calls: queued->validating->preprocessing->ocr->extracting->
         # normalizing->classifying->rule_eval->scoring - drives it all the
         # way to `scoring` so the *next* call reaches `completed`.

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
+from arq.connections import ArqRedis
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.analysis.router import router as analysis_router
+from app.analysis.worker import build_arq_pool
 from app.catalog.router import router as catalog_router
 from app.db import models as _models  # noqa: F401  (registers metadata)
 from app.db.session import get_engine, init_engine
@@ -75,6 +79,45 @@ def _build_stores(settings: Settings) -> tuple[SessionStore, Any]:
         return MemorySessionStore(), MemoryCounterStore()
 
 
+async def _build_arq_pool_or_none(settings: Settings) -> ArqRedis | None:
+    """A real Arq pool if a real Redis is configured; `None` otherwise.
+
+    Mirrors `_build_stores`'s own graceful-degradation shape exactly: the
+    `memory://` placeholder (the default in local/test, set in
+    `tests/conftest.py`) is never attempted as a real connection, and any
+    other connection failure is swallowed outside production. Without this,
+    every existing test that submits an analysis over HTTP - and there are
+    many, none of which run a live Redis - would otherwise hang for several
+    seconds retrying a connection before failing the whole request.
+    Submission still creates the `Analysis` row and returns 201/200 either
+    way; only the "start working on it automatically" part is skipped.
+    """
+    if settings.environment in ("local", "test") and settings.redis_url.startswith("memory://"):
+        return None
+    try:
+        return await build_arq_pool(settings)
+    except Exception as exc:
+        if settings.is_production:
+            raise
+        _log.warning("arq_pool_unavailable_analyses_will_not_auto_start", error=str(exc))
+        return None
+
+
+def _build_lifespan(
+    settings: Settings,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.arq_pool = await _build_arq_pool_or_none(settings)
+        try:
+            yield
+        finally:
+            if app.state.arq_pool is not None:
+                await app.state.arq_pool.close()
+
+    return lifespan
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(
@@ -88,8 +131,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         docs_url=None if settings.is_production else "/docs",
         openapi_url=None if settings.is_production else "/openapi.json",
+        lifespan=_build_lifespan(settings),
     )
     app.state.settings = settings
+    app.state.arq_pool = None  # set for real once the lifespan startup runs
 
     session_store, counter_store = _build_stores(settings)
     app.state.session_manager = SessionManager(

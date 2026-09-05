@@ -131,6 +131,67 @@ class TestSubmitAnalysis:
         assert response.status_code == 409
 
 
+class _FakeArqPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    async def enqueue_job(self, function: str, *args: object, **kwargs: object) -> None:
+        self.calls.append((function, args, kwargs))
+
+    async def close(self) -> None:
+        # `app.main`'s lifespan closes whatever is in `app.state.arq_pool`
+        # on shutdown, including a fake injected directly by a test.
+        pass
+
+
+class TestSubmissionEnqueuesTheFirstJob:
+    """`app.state.arq_pool` is `None` in every other test in this file (the
+    default/test-environment graceful-degradation path, `app.main`'s own
+    tests cover that directly) - these inject a fake pool via
+    `client.app.state.arq_pool` to prove the *other* branch: a genuinely
+    new analysis really does get its first job enqueued.
+    """
+
+    def test_a_new_analysis_enqueues_its_first_stage_job(
+        self, owner: ApiSession, version_with_file: str
+    ) -> None:
+        pool = _FakeArqPool()
+        owner.client.app.state.arq_pool = pool
+
+        response = owner.post(f"/v1/product-versions/{version_with_file}/analyses", json={})
+
+        assert response.status_code == 201
+        assert len(pool.calls) == 1
+        function, args, kwargs = pool.calls[0]
+        assert function == "run_analysis_stage"
+        assert args == (response.json()["id"], owner.org_id)
+        assert kwargs["_queue_name"] == "default"
+
+    def test_an_idempotent_resubmit_does_not_enqueue_a_second_job(
+        self, owner: ApiSession, version_with_file: str
+    ) -> None:
+        pool = _FakeArqPool()
+        owner.client.app.state.arq_pool = pool
+
+        owner.post(f"/v1/product-versions/{version_with_file}/analyses", json={})
+        assert len(pool.calls) == 1
+
+        response = owner.post(f"/v1/product-versions/{version_with_file}/analyses", json={})
+
+        assert response.status_code == 200
+        assert len(pool.calls) == 1  # unchanged - no second job for the same analysis
+
+    def test_without_a_pool_submission_still_succeeds_but_enqueues_nothing(
+        self, owner: ApiSession, version_with_file: str
+    ) -> None:
+        owner.client.app.state.arq_pool = None
+
+        response = owner.post(f"/v1/product-versions/{version_with_file}/analyses", json={})
+
+        assert response.status_code == 201
+        assert response.json()["state"] == "queued"
+
+
 class TestGetAnalysisAndEvents:
     def test_get_requires_authentication(self, client) -> None:
         assert client.get(f"/v1/analyses/{uuid.uuid4()}").status_code == 401

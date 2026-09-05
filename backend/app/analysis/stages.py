@@ -12,19 +12,31 @@ already done gets redone. If a stage's own function raises before completing,
 the transition never happens and the analysis stays exactly where it was -
 retrying re-attempts only that one stage, not the ones before it.
 
-`extracting` is real (P3-T5): it calls the configured LLM provider through
-`app/extraction/`. The rest are still honest placeholders, not real pipeline
-logic:
+`validating`, `ocr`, `extracting`, `normalizing`, and `classifying` are all
+real now - the full vertical slice from a rasterized page to a classified,
+normalized fact set. `preprocessing` stays a placeholder deliberately, not
+because it is blocked: `app.vision.ocr.service.run_ocr` already calls
+`preprocess()` itself for each page immediately before OCR runs on it (P3-T1
+composed with P3-T2, not a gap), so a separate top-level preprocessing pass
+would either duplicate that work or run it on pages `ocr` hasn't reached yet
+for no benefit. Only `rule_eval` and `scoring` remain honest placeholders
+for a real blocker:
 
-- `ocr` needs a real PaddleOCR call. P3-T2's adapter exists and is proven,
-  but only in a second Python 3.12 virtualenv - the interpreter this worker
-  would actually run under has no compatible `paddlepaddle` wheel. (The
-  deployed image *is* `python:3.12-slim`, so this is a local-environment
-  gap rather than a production one.)
-- `normalizing`/`classifying`/`rule_eval` are downstream of `extracting`'s
-  output. Their libraries all exist and are tested (P3-T7, P3-T9, P4-T3);
-  what they still need is wiring, plus - for `rule_eval` - a real published
-  ruleset, which waits on D-01.
+- `rule_eval` needs a real published ruleset to evaluate against, which
+  waits on **D-01** (first jurisdiction) actually being decided, not just
+  proposed - `app/rules/evaluator.py` itself is done and 100%-tested.
+- `scoring` is downstream of `rule_eval`'s findings (confidence tiering
+  needs findings to weigh); nothing to score without them yet.
+
+Without `rule_eval` producing anything, `scoring`'s default successor
+(`DEFAULT_NEXT_STATE[SCORING] = COMPLETED`) means a real analysis today
+walks all the way from `queued` to `completed` on its own - with genuine
+OCR tokens, a genuine LLM extraction, genuinely normalized/classified
+facts, and zero compliance findings, because there is nothing yet to
+evaluate them against. That absence is itself honest: an analysis that
+reaches `completed` with no findings is not "compliant," it is "nothing
+was checked" - `rule_eval`'s eventual wiring is what makes a `completed`
+analysis mean something.
 
 Note on cost: `_extracting` records the provider's reported **token** usage
 via P5-T5's `record_stage_cost`, but not cents - converting tokens to money
@@ -149,13 +161,243 @@ def _extracting(db: Session, analysis: Analysis) -> AnalysisState | None:
     return None
 
 
+def _validating(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Confirms rasterized pages actually exist for this product version's
+    ready files before the pipeline spends any real work on it. Ingestion
+    (P2-T3/P2-T4) already rasterizes every ready file at upload time, so a
+    version with no pages here means something upstream is broken, not that
+    retrying might help - a permanent failure, and the same check `_ocr`
+    would otherwise hit anyway, just earlier and more cheaply."""
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.catalog.models import File, FilePage, FileStatus
+
+    has_pages = db.scalar(
+        select(FilePage.id)
+        .join(File, File.id == FilePage.file_id)
+        .where(
+            File.organization_id == analysis.organization_id,
+            File.product_version_id == analysis.product_version_id,
+            File.status == FileStatus.READY,
+        )
+        .limit(1)
+    )
+    if has_pages is None:
+        raise PermanentStageError(
+            "No rasterized pages exist for this product version's ready files."
+        )
+    return None
+
+
+def _ocr(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Runs OCR over every rasterized page of this product version's ready
+    files, via `app.vision.ocr.service.run_ocr` (P3-T2) - already proven
+    against a real PaddleOCR engine (see IMPLEMENTATION.md's P3-T2
+    evidence), just never called from the pipeline until now.
+
+    A page that already has an `OcrResult` is skipped - duplicate job
+    delivery (a job redelivered after it actually succeeded) must not re-run
+    OCR on work already done. That said, this stage is still one atomic unit
+    like every other in this module: nothing here commits until the whole
+    function returns, so a crash partway through re-OCRs every page from
+    *this* attempt, not just the one that failed. Per-page checkpointing
+    within a single stage is a real possible refinement, not attempted here.
+    """
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError, TransientStageError
+    from app.catalog.models import File, FilePage, FileStatus
+    from app.platform.config import get_settings
+    from app.storage.client import build_storage_client
+    from app.vision.models import OcrResult
+    from app.vision.ocr.service import get_default_ocr_engine, run_ocr
+
+    pages = list(
+        db.scalars(
+            select(FilePage)
+            .join(File, File.id == FilePage.file_id)
+            .where(
+                File.organization_id == analysis.organization_id,
+                File.product_version_id == analysis.product_version_id,
+                File.status == FileStatus.READY,
+            )
+            .order_by(File.id, FilePage.page_no)
+        ).all()
+    )
+    if not pages:
+        raise PermanentStageError("No rasterized pages exist for this product version.")
+
+    already_done = {
+        row.file_page_id
+        for row in db.scalars(
+            select(OcrResult).where(
+                OcrResult.organization_id == analysis.organization_id,
+                OcrResult.file_page_id.in_([p.id for p in pages]),
+            )
+        ).all()
+    }
+
+    try:
+        engine = get_default_ocr_engine()
+    except Exception as exc:
+        # Missing/broken in *this* environment is permanent from this
+        # worker's perspective - every worker runs the same image, so
+        # retrying elsewhere cannot succeed either.
+        raise PermanentStageError(f"OCR engine unavailable: {exc}") from exc
+
+    storage = build_storage_client(get_settings())
+
+    for page in pages:
+        if page.id in already_done:
+            continue
+        try:
+            run_ocr(
+                db, storage, engine, organization_id=analysis.organization_id, file_page=page
+            )
+        except ValueError as exc:
+            # `run_ocr` raises `ValueError` when the rendered page can't be
+            # decoded as an image at all - a corrupt render, not something a
+            # retry fixes.
+            raise PermanentStageError(f"Page {page.id} could not be decoded: {exc}") from exc
+        except Exception as exc:
+            raise TransientStageError(f"OCR failed on page {page.id}: {exc}") from exc
+
+    return None
+
+
+def _normalizing(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Deterministic Python normalization (P3-T7) over what `_extracting`
+    persisted - IMPLEMENTATION.md §8 step 7's whole point: units, locale
+    numbers, and dates are parsed here, never left to the model.
+
+    Two different things get written, matching P3-T5's own division
+    (`app/extraction/service.py`'s module docstring): the ingredient list is
+    *structural* - P3-T4's schema defines `ingredients.items` as a real
+    parsed list, not text - so it is written back into
+    `Extraction.payload`/`LabelFacts` itself; everything else normalized
+    here (dates, quantity) is *auxiliary* to an as-printed value that stays
+    in `LabelFacts` unchanged, so it lands on `ExtractedField.value_norm`/
+    `unit` instead - the columns P3-T5 added for exactly this, needing no
+    second migration.
+
+    A field that fails to normalize is left un-normalized rather than
+    failing the whole stage: deterministic parsing over data an LLM already
+    read is not something a retry fixes, and one unparseable date should not
+    block every other field a reviewer could still use.
+    """
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.extraction import facts as facts_schema
+    from app.extraction.models import ExtractedField, Extraction
+    from app.extraction.normalize.dates import normalize_label_date
+    from app.extraction.normalize.ingredients import parse_ingredients
+    from app.extraction.normalize.units import parse_quantity
+
+    extraction = db.scalar(
+        select(Extraction)
+        .where(Extraction.analysis_id == analysis.id)
+        .order_by(Extraction.created_at.desc())
+    )
+    if extraction is None:
+        raise PermanentStageError("No extraction exists for this analysis to normalize.")
+
+    label_facts = facts_schema.LabelFacts.model_validate(extraction.payload)
+    declared_text = label_facts.ingredients.declared_text.value
+    if declared_text:
+        items = parse_ingredients(declared_text)
+        if items:
+            label_facts = label_facts.model_copy(
+                update={
+                    "ingredients": label_facts.ingredients.model_copy(
+                        update={"items": facts_schema.Fact.found(items)}
+                    )
+                }
+            )
+    extraction.payload = label_facts.model_dump(mode="json")
+
+    field_rows = {
+        row.field_path: row
+        for row in db.scalars(
+            select(ExtractedField).where(ExtractedField.extraction_id == extraction.id)
+        ).all()
+    }
+
+    for path in ("dates.manufacture_date", "dates.expiry_or_best_before"):
+        row = field_rows.get(path)
+        if row and row.value_raw:
+            try:
+                row.value_norm = {"iso": normalize_label_date(row.value_raw)}
+            except ValueError:
+                pass  # left un-normalized; the raw text is still there
+
+    quantity_row = field_rows.get("quantity.net_quantity")
+    if quantity_row and quantity_row.value_raw:
+        try:
+            quantity = parse_quantity(quantity_row.value_raw)
+        except ValueError:
+            pass
+        else:
+            quantity_row.value_norm = {"value": quantity.value}
+            quantity_row.unit = quantity.unit
+
+    db.flush()
+    return None
+
+
+def _classifying(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Category + jurisdiction routing (P3-T9), now wired against the real
+    (normalized) fact set instead of hand-written fixtures.
+
+    An abstention (`classify()` returning `abstained=True`) is not a stage
+    failure - it is the correct, honest outcome for a label that doesn't
+    confidently say what it is, and leaves `Analysis.category`/
+    `jurisdictions` unset rather than a guessed routing that `rule_eval`
+    would silently trust later. `ClassificationResult`'s own fields already
+    encode this (`category=None`, `jurisdictions=()`), so no special-casing
+    is needed here - the assignment below is honest either way.
+    """
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.catalog.models import Product, ProductVersion
+    from app.classification.classifier import UserHints, classify
+    from app.extraction import facts as facts_schema
+    from app.extraction.models import Extraction
+
+    extraction = db.scalar(
+        select(Extraction)
+        .where(Extraction.analysis_id == analysis.id)
+        .order_by(Extraction.created_at.desc())
+    )
+    if extraction is None:
+        raise PermanentStageError("No extraction exists for this analysis to classify.")
+    label_facts = facts_schema.LabelFacts.model_validate(extraction.payload)
+
+    version = db.get(ProductVersion, analysis.product_version_id)
+    product = db.get(Product, version.product_id) if version is not None else None
+    hints = UserHints(
+        category_hint=product.category_hint if product else None,
+        market_codes=tuple(product.market_codes or ()) if product else (),
+    )
+
+    result = classify(label_facts, hints)
+    analysis.category = result.category
+    analysis.jurisdictions = list(result.jurisdictions)
+    analysis.category_confidence = result.category_confidence
+    analysis.jurisdiction_confidence = result.jurisdiction_confidence
+    db.flush()
+    return None
+
+
 STAGE_FUNCTIONS: dict[AnalysisState, StageFn] = {
-    AnalysisState.VALIDATING: _placeholder,
+    AnalysisState.VALIDATING: _validating,
     AnalysisState.PREPROCESSING: _placeholder,
-    AnalysisState.OCR: _placeholder,
+    AnalysisState.OCR: _ocr,
     AnalysisState.EXTRACTING: _extracting,
-    AnalysisState.NORMALIZING: _placeholder,
-    AnalysisState.CLASSIFYING: _placeholder,
+    AnalysisState.NORMALIZING: _normalizing,
+    AnalysisState.CLASSIFYING: _classifying,
     AnalysisState.RULE_EVAL: _placeholder,
     AnalysisState.SCORING: _placeholder,
 }

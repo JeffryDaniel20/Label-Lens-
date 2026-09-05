@@ -16,7 +16,7 @@ from app.analysis import service, sse
 from app.analysis.models import AnalysisState
 from app.analysis.stages import advance_analysis
 from app.analysis.state_machine import transition
-from app.catalog.models import File, FileStatus, Product, ProductVersion
+from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
 from tests.conftest import make_org
 
 pytestmark = pytest.mark.unit
@@ -31,16 +31,23 @@ def analysis(db):
     version = ProductVersion(organization_id=org.id, product_id=product.id, version_no=1)
     db.add(version)
     db.flush()
+    file = File(
+        organization_id=org.id,
+        product_version_id=version.id,
+        storage_key="k",
+        original_filename="f.jpg",
+        sha256="a" * 64,
+        mime="image/jpeg",
+        bytes=1,
+        status=FileStatus.READY,
+    )
+    db.add(file)
+    db.flush()
+    # `_validating` (real - see app.analysis.stages's module docstring)
+    # needs a rasterized page to find.
     db.add(
-        File(
-            organization_id=org.id,
-            product_version_id=version.id,
-            storage_key="k",
-            original_filename="f.jpg",
-            sha256="a" * 64,
-            mime="image/jpeg",
-            bytes=1,
-            status=FileStatus.READY,
+        FilePage(
+            organization_id=org.id, file_id=file.id, page_no=1, width=10, height=10, render_key="r"
         )
     )
     db.flush()

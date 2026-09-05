@@ -307,6 +307,103 @@ class TestPostgresGuarantees:
             with pytest.raises(DatabaseError), pg_engine.begin() as conn:
                 conn.execute(text(statement))
 
+    def test_evidence_spans_are_append_only(self, pg_engine) -> None:
+        """P3-T6: evidence backing a verified field must be immutable once
+        recorded, the same `labellens_reject_mutation()` trigger function as
+        `audit_logs`/`analysis_events`."""
+        from sqlalchemy.exc import DatabaseError
+
+        (
+            org_id, product_id, version_id, file_id, page_id,
+            analysis_id, extraction_id, field_id, span_id,
+        ) = (uuid.uuid4() for _ in range(9))
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name, slug, retention_days,"
+                    " cloud_ai_enabled, created_at, updated_at)"
+                    " VALUES (:id, 'Org', 'org', 365, true, now(), now())"
+                ),
+                {"id": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO products (id, organization_id, name, internal_sku,"
+                    " created_at, updated_at) VALUES (:id, :org, 'P', 'S1', now(), now())"
+                ),
+                {"id": product_id, "org": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO product_versions (id, organization_id, product_id,"
+                    " version_no, label, status, created_at, updated_at)"
+                    " VALUES (:id, :org, :p, 1, '', 'draft', now(), now())"
+                ),
+                {"id": version_id, "org": org_id, "p": product_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO files (id, organization_id, product_version_id, storage_key,"
+                    " original_filename, sha256, mime, bytes, status, av_status,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'k', 'f.jpg', :sha, 'image/jpeg', 1,"
+                    " 'processed', 'clean', now(), now())"
+                ),
+                {"id": file_id, "org": org_id, "pv": version_id, "sha": "0" * 64},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO file_pages (id, organization_id, file_id, page_no,"
+                    " width, height, render_key, created_at, updated_at)"
+                    " VALUES (:id, :org, :f, 1, 100, 100, 'r', now(), now())"
+                ),
+                {"id": page_id, "org": org_id, "f": file_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analyses (id, organization_id, product_version_id, state,"
+                    " idempotency_key, started_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'queued', 'x', now(), now(), now())"
+                ),
+                {"id": analysis_id, "org": org_id, "pv": version_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO extractions (id, organization_id, analysis_id,"
+                    " schema_version, payload, envelope, provider, model,"
+                    " prompt_version, prompt_hash, created_at, updated_at)"
+                    " VALUES (:id, :org, :aid, '1', '{}', '{}', 'stub', 'stub',"
+                    " '1', 'h', now(), now())"
+                ),
+                {"id": extraction_id, "org": org_id, "aid": analysis_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO extracted_fields (id, organization_id, extraction_id,"
+                    " field_path, value_raw, confidence, cited_token_ids,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :ext, 'quantity.net_quantity', '250 g', 0.9,"
+                    " '[]', now(), now())"
+                ),
+                {"id": field_id, "org": org_id, "ext": extraction_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO evidence_spans (id, organization_id, extracted_field_id,"
+                    " file_page_id, token_ids, x1, y1, x2, y2, text_snippet, source,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :field, :page, '[]', 0, 0, 10, 10, '250 g',"
+                    " 'ocr', now(), now())"
+                ),
+                {"id": span_id, "org": org_id, "field": field_id, "page": page_id},
+            )
+        for statement in (
+            "UPDATE evidence_spans SET text_snippet = 'tampered'",
+            "DELETE FROM evidence_spans",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+
     def test_a_terminal_analysis_cannot_be_modified_but_a_live_one_can(self, pg_engine) -> None:
         """The conditional guarantee P5-T1 actually needs: `analyses` rows
         legitimately get UPDATEd many times before reaching a terminal

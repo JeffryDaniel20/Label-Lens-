@@ -28,8 +28,10 @@ import enum
 import uuid
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -121,6 +123,17 @@ class Analysis(UUIDPrimaryKey, TimestampMixin, Base):
     total_tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Classification result (the `classifying` stage - vertical-slice wiring).
+    # Not in IMPLEMENTATION.md §6's `analyses` column list because
+    # classification didn't exist as a wired stage when that table was
+    # designed; `rule_eval` needs exactly these two values (jurisdiction,
+    # category) to pick a ruleset, so they have to live somewhere before
+    # rule_eval can ever be built for real. `category`/`jurisdictions` stay
+    # `None`/empty on an abstention - never a guessed routing.
+    category: Mapped[str | None] = mapped_column(String(80), default=None)
+    jurisdictions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    category_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    jurisdiction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
 class AnalysisEvent(UUIDPrimaryKey, Base):

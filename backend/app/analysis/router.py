@@ -1,10 +1,11 @@
 """Analysis HTTP endpoints: submit, view, view history, cancel (P5-T1);
 dead-letter listing and replay (P5-T3).
 
-Submission does not yet enqueue the first worker job (see
-`app.analysis.worker.enqueue_first_stage`'s own docstring for why) - this
-router proves the entity, its idempotency, and its state machine end-to-end
-over real HTTP independent of that wiring.
+Submission enqueues the first worker job for a genuinely new analysis via
+`app.main`'s app-lifecycle-managed Arq pool (`request.app.state.arq_pool`) -
+`None` when no real Redis is configured (local/test default), in which case
+submission still succeeds and creates the row, it just doesn't start
+processing automatically; see `app.main._build_arq_pool_or_none`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from app.analysis import dlq, service, sse
 from app.analysis.models import Analysis, AnalysisState, ConfidenceTier, DeadLetterReason
 from app.analysis.stages import progress_percentage
 from app.analysis.state_machine import transition
+from app.analysis.worker import enqueue_first_stage
 from app.audit import service as audit
 from app.audit.models import AuditAction
 from app.catalog import service as catalog_service
@@ -97,7 +99,7 @@ def _correlation_id(request: Request) -> str | None:
 @router.post(
     "/product-versions/{version_id}/analyses", response_model=AnalysisOut
 )
-def submit_analysis(
+async def submit_analysis(
     version_id: uuid.UUID,
     request: Request,
     response: Response,
@@ -120,6 +122,16 @@ def submit_analysis(
         ip=_ip(request),
     )
     response.status_code = 201 if created else 200
+
+    # Only a genuinely new analysis gets a first job - an idempotent resubmit
+    # returns the existing (possibly already-running, possibly terminal) one
+    # unchanged, and must never enqueue a second worker job for it.
+    pool = request.app.state.arq_pool
+    if created and pool is not None:
+        await enqueue_first_stage(
+            pool, analysis_id=str(analysis.id), organization_id=str(principal.org_id)
+        )
+
     return AnalysisOut.from_analysis(analysis)
 
 
@@ -142,14 +154,30 @@ def list_dead_letters(
 
 
 @router.post("/analyses/dead-letters/{dead_letter_id}/replay", response_model=AnalysisOut)
-def replay_dead_letter(
+async def replay_dead_letter(
     dead_letter_id: uuid.UUID,
+    request: Request,
     principal: Principal = Depends(require(Capability.ANALYSIS_RUN)),
     db: Session = Depends(get_db),
 ) -> AnalysisOut:
     new_analysis = dlq.replay_dead_letter(
         db, organization_id=principal.org_id, dead_letter_id=dead_letter_id
     )
+
+    # A replay always creates a brand-new (never-before-submitted) analysis
+    # (see `dlq.replay_dead_letter`'s own docstring), so - unlike
+    # `submit_analysis`'s idempotent-resubmit case - there is no "already
+    # running" possibility to guard against here: every successful replay
+    # gets a first job, exactly like every genuinely new submission does.
+    # Found live, 2026-09-04: replay originally left the row `queued`
+    # forever with nothing ever enqueued to start it - a real gap this
+    # session's own end-to-end verification caught, not a hypothetical one.
+    pool = request.app.state.arq_pool
+    if pool is not None:
+        await enqueue_first_stage(
+            pool, analysis_id=str(new_analysis.id), organization_id=str(principal.org_id)
+        )
+
     return AnalysisOut.from_analysis(new_analysis)
 
 

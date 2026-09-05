@@ -1,4 +1,4 @@
-"""Persisted extraction output (P3-T5).
+"""Persisted extraction output (P3-T5) and evidence verification (P3-T6).
 
 `Extraction` is one LLM pass over one analysis's OCR text; `ExtractedField`
 is one row per dotted field path - the join point evidence hangs off, keyed
@@ -6,10 +6,13 @@ by the same path `rules/*.yaml` already references (`ingredients.items`), so
 a rule, a fact, and its evidence all address the same field the same way.
 
 `cited_token_ids` holds the OCR tokens the model said each value came from.
-P3-T6 (the evidence verification gate) is what turns those citations into
-`evidence_spans` with bboxes and snippets, and what enforces the
-substring-match check that demotes an uncited or unmatchable value to
-`unverified`. P3-T5's job stops at recording *what was cited*.
+`app.extraction.evidence` (P3-T6) is what turns those citations into
+`EvidenceSpan` rows with bboxes and snippets, and what enforces the
+substring-match check that sets `verified`/`match_ratio` - a field that
+fails demotes its corresponding `LabelFacts` entry to an explicit absence
+*before* `Extraction.payload` is ever persisted, so `verified`/`match_ratio`
+here are a record of what happened, not something downstream code must
+remember to re-check.
 
 `value_norm`/`unit` are deliberately nullable and unpopulated here: §8 step 7
 is explicit that normalization is deterministic Python, not the model, so
@@ -62,6 +65,9 @@ class Extraction(UUIDPrimaryKey, TimestampMixin, Base):
     escalated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # P3-T6's own acceptance line: "demotions are counted as a metric."
+    verified_field_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    demoted_field_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class ExtractedField(UUIDPrimaryKey, TimestampMixin, Base):
@@ -88,3 +94,56 @@ class ExtractedField(UUIDPrimaryKey, TimestampMixin, Base):
     # Filled by the `normalizing` stage (P3-T7), not by the model.
     value_norm: Mapped[dict[str, object] | None] = mapped_column(JsonB, default=None)
     unit: Mapped[str | None] = mapped_column(String(20), default=None)
+    # Filled by the P3-T6 evidence gate, before this row's extraction ever
+    # returns - `None` means "not yet verified" (a field with no value at
+    # all, which verification skips entirely), not "verification pending."
+    verified: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    match_ratio: Mapped[float | None] = mapped_column(Float, default=None)
+
+
+class EvidenceSpan(UUIDPrimaryKey, TimestampMixin, Base):
+    """Where a verified value actually came from (P3-T6) - IMPLEMENTATION.md
+    §11's evidence chain, `extracted_field → evidence_span → file_page →
+    bbox → original file`, materialized as a real, immutable row. Only
+    created for a field that *passed* verification - an unverified field
+    already demotes its `LabelFacts` entry to an explicit absence, so there
+    is nothing for a rule (or a reviewer) to trace evidence for.
+
+    Append-only (migration 0011), reusing the same `labellens_reject_
+    mutation()` trigger function `audit_logs`/`rulesets`/`rules`/
+    `analysis_events` already use - §11: "Evidence is immutable". Content-
+    hashing (also mentioned in §11, for embedding a stable crop in a
+    generated report) is deferred to whichever of P5-T4/P7-T1 actually
+    needs it; nothing here blocks adding it later.
+    """
+
+    __tablename__ = "evidence_spans"
+    __table_args__ = (
+        Index("ix_evidence_spans_org_field", "organization_id", "extracted_field_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    extracted_field_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("extracted_fields.id", ondelete="CASCADE"), nullable=False
+    )
+    file_page_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("file_pages.id", ondelete="CASCADE"), nullable=False
+    )
+    # The `ocr_tokens.id`s this span was built from - kept alongside the
+    # bbox/snippet below so the exact tokens remain traceable, not just
+    # their aggregate region.
+    token_ids: Mapped[list[str]] = mapped_column(JsonB, nullable=False, default=list)
+    # The union bounding box of every cited token, in the page's *original*
+    # image coordinates (matching `ocr_tokens.x1`/etc.'s own convention).
+    x1: Mapped[float] = mapped_column(Float, nullable=False)
+    y1: Mapped[float] = mapped_column(Float, nullable=False)
+    x2: Mapped[float] = mapped_column(Float, nullable=False)
+    y2: Mapped[float] = mapped_column(Float, nullable=False)
+    # The literal OCR text this span covers - survives even if the image is
+    # later purged under retention policy (§11).
+    text_snippet: Mapped[str] = mapped_column(String(2000), nullable=False)
+    # "ocr" today; "vision"/"derived" are reserved for when a multimodal
+    # extraction path or a computed (unit-converted) field exists.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="ocr")

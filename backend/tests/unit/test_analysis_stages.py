@@ -17,7 +17,7 @@ from app.analysis.stages import (
     progress_percentage,
     progress_percentage_for_state,
 )
-from app.catalog.models import File, FileStatus, Product, ProductVersion
+from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
 from tests.conftest import make_org
 
 pytestmark = pytest.mark.unit
@@ -32,16 +32,24 @@ def analysis(db):
     version = ProductVersion(organization_id=org.id, product_id=product.id, version_no=1)
     db.add(version)
     db.flush()
+    file = File(
+        organization_id=org.id,
+        product_version_id=version.id,
+        storage_key="k",
+        original_filename="f.jpg",
+        sha256="a" * 64,
+        mime="image/jpeg",
+        bytes=1,
+        status=FileStatus.READY,
+    )
+    db.add(file)
+    db.flush()
+    # `_validating` (real, not a placeholder - see the module docstring)
+    # needs a rasterized page to find, exactly like ingestion would have
+    # already produced one for a real `ready` file.
     db.add(
-        File(
-            organization_id=org.id,
-            product_version_id=version.id,
-            storage_key="k",
-            original_filename="f.jpg",
-            sha256="a" * 64,
-            mime="image/jpeg",
-            bytes=1,
-            status=FileStatus.READY,
+        FilePage(
+            organization_id=org.id, file_id=file.id, page_no=1, width=10, height=10, render_key="r"
         )
     )
     db.flush()
@@ -102,17 +110,33 @@ class TestStageSequenceStructure:
 
 
 class TestPlaceholderStages:
-    def test_the_real_unpatched_placeholder_advances_without_doing_anything(
+    def test_the_real_unpatched_validating_stage_passes_with_a_real_page(
         self, db, analysis
     ) -> None:
         """No monkeypatching here: exercises the genuine, currently-registered
-        placeholder stage functions (see the module docstring for why they
-        are honest no-ops for now)."""
-        advance_analysis(db, analysis)  # queued -> validating (no stage fn)
+        `_validating` (real, not a placeholder) against a fixture that has a
+        real rasterized page - the success path a properly-ingested file
+        actually takes."""
+        advance_analysis(db, analysis)  # queued -> validating (no stage fn on queued)
         db.commit()
-        result = advance_analysis(db, analysis)  # validating -> preprocessing (real placeholder)
+        result = advance_analysis(db, analysis)  # validating -> preprocessing (real _validating)
         db.commit()
         assert result is AnalysisState.PREPROCESSING
+
+    def test_the_real_unpatched_preprocessing_placeholder_advances_without_doing_anything(
+        self, db, analysis
+    ) -> None:
+        """`preprocessing` is the one stage in `STAGE_SEQUENCE` still a
+        genuine placeholder (see the module docstring for why: `run_ocr`
+        already calls `preprocess()` itself, so a separate pass would be
+        redundant, not blocked)."""
+        advance_analysis(db, analysis)  # queued -> validating
+        db.commit()
+        advance_analysis(db, analysis)  # validating -> preprocessing (real _validating)
+        db.commit()
+        result = advance_analysis(db, analysis)  # preprocessing -> ocr (real placeholder)
+        db.commit()
+        assert result is AnalysisState.OCR
 
 
 class TestAdvanceAnalysisChaining:

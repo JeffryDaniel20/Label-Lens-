@@ -47,7 +47,7 @@ class _RaisingProvider:
 
 
 @pytest.fixture
-def analysis_at_extracting(db):
+def analysis_at_extracting(db, monkeypatch):
     """An analysis already advanced to the `extracting` state, with tokens."""
     org = make_org(db)
     product = Product(organization_id=org.id, name="Chips", internal_sku="S1")
@@ -105,6 +105,12 @@ def analysis_at_extracting(db):
     analysis, _ = analysis_service.create_or_get_analysis(
         db, organization_id=org.id, version=version, file_set_hash=file_hash
     )
+    # The fixture already built a real `OcrResult`/tokens by hand above -
+    # `_ocr` running for real would just redundantly (and, without a live
+    # PaddleOCR engine, unsuccessfully) try to reproduce that, so it's
+    # stubbed to a no-op for this walk only; this file's own tests are about
+    # the `extracting` stage, not `ocr`'s.
+    monkeypatch.setitem(STAGE_FUNCTIONS, AnalysisState.OCR, lambda db, analysis: None)
     # queued -> validating -> preprocessing -> ocr -> extracting
     for _ in range(4):
         advance_analysis(db, analysis)

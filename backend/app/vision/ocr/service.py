@@ -25,6 +25,25 @@ from app.vision.ocr.base import OcrEngine, OcrToken
 from app.vision.preprocess import map_bbox_to_original, preprocess
 from app.vision.transform import Point
 
+_default_engine: OcrEngine | None = None
+
+
+def get_default_ocr_engine() -> OcrEngine:
+    """A process-wide cached `PaddleOcrEngine` (P3-T2).
+
+    Constructing one loads real model weights - expensive enough that
+    building a fresh engine per analysis, rather than once per worker
+    process, would dominate the whole pipeline's latency. Callers that need
+    a different engine (a fake in tests, a future cloud-fallback adapter)
+    pass their own rather than going through this cache.
+    """
+    global _default_engine
+    if _default_engine is None:
+        from app.vision.ocr.paddle import PaddleOcrEngine  # noqa: PLC0415 - lazy, see paddle.py
+
+        _default_engine = PaddleOcrEngine()
+    return _default_engine
+
 
 def _decode_image(data: bytes) -> np.ndarray:
     array = np.frombuffer(data, dtype=np.uint8)
