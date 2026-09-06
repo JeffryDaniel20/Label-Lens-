@@ -41,6 +41,16 @@ def build_render_key(
     return f"org/{organization_id}/pv/{product_version_id}/render/{sha256}/{page_no:04d}.png"
 
 
+def build_report_pdf_key(
+    *, organization_id: uuid.UUID, product_version_id: uuid.UUID, report_id: uuid.UUID
+) -> str:
+    """Nested under the same `pv` segment as every other key (P7-T2), not a
+    parallel `org/{org}/reports/...` scheme - `key_belongs_to_org`'s ownership
+    check only recognizes the one prefix, and a second scheme would need its
+    own check duplicated alongside it for no real benefit."""
+    return f"org/{organization_id}/pv/{product_version_id}/reports/{report_id}.pdf"
+
+
 def key_belongs_to_org(key: str, organization_id: uuid.UUID) -> bool:
     """True if `key` was minted under this organization's namespace.
 

@@ -16,6 +16,7 @@ from app.analysis.worker import build_arq_pool
 from app.catalog.router import router as catalog_router
 from app.db import models as _models  # noqa: F401  (registers metadata)
 from app.db.session import get_engine, init_engine
+from app.findings.router import router as findings_router
 from app.identity.router import router as identity_router
 from app.identity.sessions import (
     MemorySessionStore,
@@ -34,6 +35,7 @@ from app.platform.middleware import (
     SecurityHeadersMiddleware,
 )
 from app.platform.ratelimit import MemoryCounterStore, RateLimiter, RedisCounterStore
+from app.reports.router import router as reports_router
 from app.storage.client import build_storage_client
 from app.storage.router import router as storage_router
 
@@ -164,4 +166,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(storage_router)
     app.include_router(ingestion_router)
     app.include_router(analysis_router)
+    app.include_router(findings_router)
+    app.include_router(reports_router)
     return app

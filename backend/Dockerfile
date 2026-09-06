@@ -7,9 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 
+# libpango-1.0-0/libpangocairo-1.0-0/libgdk-pixbuf-2.0-0/libcairo2/
+# shared-mime-info/fonts-liberation2: WeasyPrint's own native rendering
+# dependencies (P7-T2) - it has no pure-Python fallback for Pango text
+# shaping, so these are required at runtime, not just at wheel-build time.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     build-essential libpq5 curl libgomp1 libgl1 libglib2.0-0 \
+    libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libcairo2 \
+    shared-mime-info fonts-liberation2 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . .

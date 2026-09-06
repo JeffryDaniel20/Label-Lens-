@@ -19,24 +19,24 @@ because it is blocked: `app.vision.ocr.service.run_ocr` already calls
 `preprocess()` itself for each page immediately before OCR runs on it (P3-T1
 composed with P3-T2, not a gap), so a separate top-level preprocessing pass
 would either duplicate that work or run it on pages `ocr` hasn't reached yet
-for no benefit. Only `rule_eval` and `scoring` remain honest placeholders
-for a real blocker:
+for no benefit. Only `rule_eval` remains an honest placeholder for a real blocker: it needs
+a real published ruleset to evaluate against, which waits on **D-01** (first
+jurisdiction) actually being decided, not just proposed - `app/rules/
+evaluator.py` itself is done and 100%-tested.
 
-- `rule_eval` needs a real published ruleset to evaluate against, which
-  waits on **D-01** (first jurisdiction) actually being decided, not just
-  proposed - `app/rules/evaluator.py` itself is done and 100%-tested.
-- `scoring` is downstream of `rule_eval`'s findings (confidence tiering
-  needs findings to weigh); nothing to score without them yet.
-
-Without `rule_eval` producing anything, `scoring`'s default successor
-(`DEFAULT_NEXT_STATE[SCORING] = COMPLETED`) means a real analysis today
-walks all the way from `queued` to `completed` on its own - with genuine
-OCR tokens, a genuine LLM extraction, genuinely normalized/classified
-facts, and zero compliance findings, because there is nothing yet to
-evaluate them against. That absence is itself honest: an analysis that
-reaches `completed` with no findings is not "compliant," it is "nothing
-was checked" - `rule_eval`'s eventual wiring is what makes a `completed`
-analysis mean something.
+`scoring` is real now too (P3-T8): `app.confidence.tiers.compute_analysis_tier`
+rolls every extracted field's confidence up into one `ConfidenceTier`, and
+`_scoring` routes explicitly - `high` falls through to
+`DEFAULT_NEXT_STATE[SCORING] = COMPLETED`, anything else returns
+`needs_review` directly, matching §14's "any analysis in Medium/Low tier ...
+routes to review." It still cannot weigh real compliance findings, since
+`rule_eval` produces none yet - a `completed` analysis today means "nothing
+was checked," not "compliant," and `compute_analysis_tier` computes over
+*every* extracted field rather than "fields any triggered rule depends on"
+because no ruleset can be resolved to say which fields those are (see that
+module's own docstring for why this is a safe, documented superset rather
+than a silent narrowing). `rule_eval`'s eventual wiring is what closes that
+gap, not a change to `scoring` itself.
 
 Note on cost: `_extracting` records the provider's reported **token** usage
 via P5-T5's `record_stage_cost`, but not cents - converting tokens to money
@@ -58,7 +58,7 @@ from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
-from app.analysis.models import TERMINAL_STATES, Analysis, AnalysisState
+from app.analysis.models import TERMINAL_STATES, Analysis, AnalysisState, ConfidenceTier
 from app.analysis.state_machine import transition
 
 type StageFn = Callable[[Session, Analysis], AnalysisState | None]
@@ -76,9 +76,9 @@ STAGE_SEQUENCE: tuple[AnalysisState, ...] = (
 
 # The state a stage transitions to by default once its function returns
 # without an explicit override. `scoring`'s real successor depends on the
-# analysis's own confidence tier (`needs_review` vs `completed`) - a real
-# scoring stage function decides that itself by returning the state
-# explicitly; the default here is the "nothing computed a tier yet" case.
+# analysis's own confidence tier (`needs_review` vs `completed`) - `_scoring`
+# decides that itself by returning the state explicitly; the default here
+# only applies to the `high`-tier case, where it returns `None`.
 DEFAULT_NEXT_STATE: dict[AnalysisState, AnalysisState] = {
     AnalysisState.QUEUED: AnalysisState.VALIDATING,
     AnalysisState.VALIDATING: AnalysisState.PREPROCESSING,
@@ -391,6 +391,34 @@ def _classifying(db: Session, analysis: Analysis) -> AnalysisState | None:
     return None
 
 
+def _scoring(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Confidence tiering (P3-T8), now wired for real. Explicitly returns
+    `needs_review` for anything below `high` rather than relying on
+    `DEFAULT_NEXT_STATE`, since that default only covers the "nothing
+    computed a tier yet" case - see the module docstring."""
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.confidence.tiers import compute_analysis_tier
+    from app.extraction.models import Extraction
+
+    extraction = db.scalar(
+        select(Extraction)
+        .where(Extraction.analysis_id == analysis.id)
+        .order_by(Extraction.created_at.desc())
+    )
+    if extraction is None:
+        raise PermanentStageError("No extraction exists for this analysis to score.")
+
+    result = compute_analysis_tier(db, extraction=extraction)
+    analysis.confidence_tier = result.tier
+    db.flush()
+
+    if result.tier == ConfidenceTier.HIGH:
+        return None
+    return AnalysisState.NEEDS_REVIEW
+
+
 STAGE_FUNCTIONS: dict[AnalysisState, StageFn] = {
     AnalysisState.VALIDATING: _validating,
     AnalysisState.PREPROCESSING: _placeholder,
@@ -399,7 +427,7 @@ STAGE_FUNCTIONS: dict[AnalysisState, StageFn] = {
     AnalysisState.NORMALIZING: _normalizing,
     AnalysisState.CLASSIFYING: _classifying,
     AnalysisState.RULE_EVAL: _placeholder,
-    AnalysisState.SCORING: _placeholder,
+    AnalysisState.SCORING: _scoring,
 }
 
 

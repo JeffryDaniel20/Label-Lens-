@@ -112,8 +112,10 @@ class TestRedisSettingsFallback:
 
 
 class TestWorkerSettingsContract:
-    def test_registers_exactly_the_one_stage_function(self) -> None:
-        assert WorkerSettings.functions == (run_analysis_stage,)
+    def test_registers_the_stage_and_pdf_rendering_functions(self) -> None:
+        from app.reports.worker import render_report_pdf_job
+
+        assert WorkerSettings.functions == (run_analysis_stage, render_report_pdf_job)
 
     def test_graceful_shutdown_is_configured(self) -> None:
         assert WorkerSettings.handle_signals is True
@@ -139,16 +141,18 @@ class TestRunAnalysisStageChaining:
 
     def test_reaching_a_stopping_state_does_not_enqueue_anything(self, db, monkeypatch) -> None:
         org, analysis = _make_analysis(db)
-        # `ocr`, `extracting`, `normalizing`, and `classifying` are all real
-        # stages now and would fail here for want of a live OCR engine/LLM
-        # credential/real extraction to normalize. This test is about queue
-        # chaining and stopping states, not any stage's own content, so they
-        # are stubbed back to no-ops - each has its own dedicated suite.
+        # `ocr`, `extracting`, `normalizing`, `classifying`, and `scoring` are
+        # all real stages now and would fail here for want of a live OCR
+        # engine/LLM credential/real extraction to normalize, score, or
+        # classify. This test is about queue chaining and stopping states,
+        # not any stage's own content, so they are stubbed back to no-ops -
+        # each has its own dedicated suite.
         for state in (
             AnalysisState.OCR,
             AnalysisState.EXTRACTING,
             AnalysisState.NORMALIZING,
             AnalysisState.CLASSIFYING,
+            AnalysisState.SCORING,
         ):
             monkeypatch.setitem(STAGE_FUNCTIONS, state, lambda db, analysis: None)
         # 8 calls: queued->validating->preprocessing->ocr->extracting->

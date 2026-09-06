@@ -404,6 +404,208 @@ class TestPostgresGuarantees:
             with pytest.raises(DatabaseError), pg_engine.begin() as conn:
                 conn.execute(text(statement))
 
+    def test_findings_and_finding_evidence_are_append_only(self, pg_engine) -> None:
+        """P5-T4: a rule engine verdict, and the evidence edge tracing it,
+        must be immutable once recorded - the same `labellens_reject_
+        mutation()` trigger function as `audit_logs`/`analysis_events`/
+        `evidence_spans`."""
+        from sqlalchemy.exc import DatabaseError
+
+        (
+            org_id, product_id, version_id, file_id, page_id, analysis_id, extraction_id,
+            field_id, span_id, ruleset_id, rule_id, finding_id, finding_evidence_id,
+        ) = (uuid.uuid4() for _ in range(13))
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name, slug, retention_days,"
+                    " cloud_ai_enabled, created_at, updated_at)"
+                    " VALUES (:id, 'Org', 'org', 365, true, now(), now())"
+                ),
+                {"id": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO products (id, organization_id, name, internal_sku,"
+                    " created_at, updated_at) VALUES (:id, :org, 'P', 'S1', now(), now())"
+                ),
+                {"id": product_id, "org": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO product_versions (id, organization_id, product_id,"
+                    " version_no, label, status, created_at, updated_at)"
+                    " VALUES (:id, :org, :p, 1, '', 'draft', now(), now())"
+                ),
+                {"id": version_id, "org": org_id, "p": product_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO files (id, organization_id, product_version_id, storage_key,"
+                    " original_filename, sha256, mime, bytes, status, av_status,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'k', 'f.jpg', :sha, 'image/jpeg', 1,"
+                    " 'processed', 'clean', now(), now())"
+                ),
+                {"id": file_id, "org": org_id, "pv": version_id, "sha": "1" * 64},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO file_pages (id, organization_id, file_id, page_no,"
+                    " width, height, render_key, created_at, updated_at)"
+                    " VALUES (:id, :org, :f, 1, 100, 100, 'r', now(), now())"
+                ),
+                {"id": page_id, "org": org_id, "f": file_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analyses (id, organization_id, product_version_id, state,"
+                    " idempotency_key, started_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'queued', 'x', now(), now(), now())"
+                ),
+                {"id": analysis_id, "org": org_id, "pv": version_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO extractions (id, organization_id, analysis_id,"
+                    " schema_version, payload, envelope, provider, model,"
+                    " prompt_version, prompt_hash, created_at, updated_at)"
+                    " VALUES (:id, :org, :aid, '1', '{}', '{}', 'stub', 'stub',"
+                    " '1', 'h', now(), now())"
+                ),
+                {"id": extraction_id, "org": org_id, "aid": analysis_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO extracted_fields (id, organization_id, extraction_id,"
+                    " field_path, value_raw, confidence, cited_token_ids,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :ext, 'quantity.net_quantity', '250 g', 0.9,"
+                    " '[]', now(), now())"
+                ),
+                {"id": field_id, "org": org_id, "ext": extraction_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO evidence_spans (id, organization_id, extracted_field_id,"
+                    " file_page_id, token_ids, x1, y1, x2, y2, text_snippet, source,"
+                    " created_at, updated_at)"
+                    " VALUES (:id, :org, :field, :page, '[]', 0, 0, 10, 10, '250 g',"
+                    " 'ocr', now(), now())"
+                ),
+                {"id": span_id, "org": org_id, "field": field_id, "page": page_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO rulesets (id, jurisdiction, category, version,"
+                    " effective_from, source_citations, author, review_date,"
+                    " checksum, published_at)"
+                    " VALUES (:id, 'IN', 'packaged_food', '1.0.0', '2024-01-01',"
+                    " '[]', 'test', '2024-01-01', :checksum, now())"
+                ),
+                {"id": ruleset_id, "checksum": uuid.uuid4().hex},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO rules (id, ruleset_id, rule_key, version, title, citation,"
+                    " severity, effective_from, payload)"
+                    " VALUES (:id, :ruleset, 'IN-TEST', 1, 't', 'c', 'minor',"
+                    " '2024-01-01', '{}')"
+                ),
+                {"id": rule_id, "ruleset": ruleset_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO findings (id, organization_id, analysis_id, ruleset_id,"
+                    " rule_id, rule_key, rule_version, status, severity, details,"
+                    " confidence, created_at, updated_at)"
+                    " VALUES (:id, :org, :aid, :ruleset, :rule, 'IN-TEST', 1, 'pass',"
+                    " 'minor', '{}', 0.9, now(), now())"
+                ),
+                {
+                    "id": finding_id, "org": org_id, "aid": analysis_id,
+                    "ruleset": ruleset_id, "rule": rule_id,
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO finding_evidence (id, organization_id, finding_id,"
+                    " extracted_field_id, evidence_span_id, role, created_at, updated_at)"
+                    " VALUES (:id, :org, :finding, :field, :span, 'cited', now(), now())"
+                ),
+                {
+                    "id": finding_evidence_id, "org": org_id, "finding": finding_id,
+                    "field": field_id, "span": span_id,
+                },
+            )
+        for statement in (
+            "UPDATE finding_evidence SET role = 'tampered'",
+            "DELETE FROM finding_evidence",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+        for statement in (
+            "UPDATE findings SET status = 'fail'",
+            "DELETE FROM findings",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+
+    def test_reports_are_append_only(self, pg_engine) -> None:
+        """P7-T1: a generated report snapshot must be immutable once
+        recorded - section 19's "self-contained immutable snapshot" -
+        reusing the same `labellens_reject_mutation()` trigger function as
+        every other immutable table in this codebase."""
+        from sqlalchemy.exc import DatabaseError
+
+        org_id, product_id, version_id, analysis_id, report_id = (uuid.uuid4() for _ in range(5))
+        with pg_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name, slug, retention_days,"
+                    " cloud_ai_enabled, created_at, updated_at)"
+                    " VALUES (:id, 'Org', 'org', 365, true, now(), now())"
+                ),
+                {"id": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO products (id, organization_id, name, internal_sku,"
+                    " created_at, updated_at) VALUES (:id, :org, 'P', 'S1', now(), now())"
+                ),
+                {"id": product_id, "org": org_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO product_versions (id, organization_id, product_id,"
+                    " version_no, label, status, created_at, updated_at)"
+                    " VALUES (:id, :org, :p, 1, '', 'draft', now(), now())"
+                ),
+                {"id": version_id, "org": org_id, "p": product_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO analyses (id, organization_id, product_version_id, state,"
+                    " idempotency_key, started_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :pv, 'queued', 'x', now(), now(), now())"
+                ),
+                {"id": analysis_id, "org": org_id, "pv": version_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO reports (id, organization_id, analysis_id, kind,"
+                    " snapshot, sha256, generated_at, created_at, updated_at)"
+                    " VALUES (:id, :org, :aid, 'json', '{}', :sha, now(), now(), now())"
+                ),
+                {"id": report_id, "org": org_id, "aid": analysis_id, "sha": "0" * 64},
+            )
+        for statement in (
+            "UPDATE reports SET sha256 = repeat('1', 64)",
+            "DELETE FROM reports",
+        ):
+            with pytest.raises(DatabaseError), pg_engine.begin() as conn:
+                conn.execute(text(statement))
+
     def test_a_terminal_analysis_cannot_be_modified_but_a_live_one_can(self, pg_engine) -> None:
         """The conditional guarantee P5-T1 actually needs: `analyses` rows
         legitimately get UPDATEd many times before reaching a terminal

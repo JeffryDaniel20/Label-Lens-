@@ -64,6 +64,7 @@ from app.analysis.state_machine import transition
 from app.db import models as _models  # noqa: F401 - registers every mapped table's metadata
 from app.db.session import get_session_factory, init_engine, set_tenant_context
 from app.platform.config import Settings, get_settings
+from app.reports.worker import render_report_pdf_job
 
 QUEUE_DEFAULT = "default"
 QUEUE_OCR = "ocr"
@@ -260,7 +261,7 @@ class WorkerSettings:
     attribute, evaluated once at import time - it cannot be a method.
     """
 
-    functions = (run_analysis_stage,)
+    functions = (run_analysis_stage, render_report_pdf_job)
     # Every minute: cheap (an indexed state filter over `analyses`) and the
     # budget itself is measured in minutes, so sub-minute reaping precision
     # buys nothing.

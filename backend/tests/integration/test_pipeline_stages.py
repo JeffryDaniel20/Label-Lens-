@@ -15,7 +15,7 @@ from PIL import Image
 from sqlalchemy import select
 
 from app.analysis import service as analysis_service
-from app.analysis.models import AnalysisState
+from app.analysis.models import AnalysisState, ConfidenceTier
 from app.analysis.retry_policy import PermanentStageError, TransientStageError
 from app.analysis.stages import _classifying, _normalizing, _ocr, _validating
 from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
@@ -551,15 +551,21 @@ class TestVerticalSlice:
         monkeypatch.setattr("app.extraction.llm.build_provider", lambda _s: _StubProvider())
 
         # queued -> validating -> preprocessing -> ocr -> extracting ->
-        # normalizing -> classifying -> rule_eval -> scoring -> completed.
-        # `rule_eval`/`scoring` are still honest placeholders (D-01), so
-        # `scoring`'s default successor really is `completed` - see the
-        # module docstring for why that is itself an honest outcome.
+        # normalizing -> classifying -> rule_eval -> scoring -> needs_review.
+        # `rule_eval` is still an honest placeholder (D-01), but `scoring`
+        # (P3-T8) is real now: `VALID_JSON` honestly leaves several fields
+        # not-found (no nutrition panel, no claims, no address) and cites an
+        # out-of-range OCR token for two more, given this test's own 2-token
+        # `_FakeOcrEngine` fixture - `compute_analysis_tier` correctly forces
+        # those to Low and routes to mandatory review rather than silently
+        # completing, exactly matching this codebase's "absence of data is
+        # never treated as compliance" principle (IMPLEMENTATION.md §1).
         for _ in range(9):
             advance_analysis(db, analysis)
             db.commit()
 
-        assert analysis.state is AnalysisState.COMPLETED
+        assert analysis.state is AnalysisState.NEEDS_REVIEW
+        assert analysis.confidence_tier is ConfidenceTier.LOW
         assert analysis.category == "packaged_food"
         tokens = db.scalars(
             select(OcrTokenRow).where(OcrTokenRow.file_page_id == page.id)

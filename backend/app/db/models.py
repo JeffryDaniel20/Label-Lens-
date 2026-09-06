@@ -7,7 +7,9 @@ from app.audit.models import AuditLog
 from app.catalog.models import File, FilePage, Product, ProductVersion
 from app.db.base import Base
 from app.extraction.models import EvidenceSpan, ExtractedField, Extraction
+from app.findings.models import Finding, FindingEvidence
 from app.identity.models import ApiKey, Membership, Organization, RecoveryCode, User
+from app.reports.models import Report
 from app.rules.models import RuleRow, Ruleset
 from app.vision.models import OcrResult, OcrTokenRow
 
@@ -29,6 +31,9 @@ TENANT_TABLES: tuple[str, ...] = (
     "extractions",
     "extracted_fields",
     "evidence_spans",
+    "findings",
+    "finding_evidence",
+    "reports",
     "audit_logs",
 )
 
@@ -45,6 +50,8 @@ __all__ = [
     "Extraction",
     "File",
     "FilePage",
+    "Finding",
+    "FindingEvidence",
     "Membership",
     "OcrResult",
     "OcrTokenRow",
@@ -52,6 +59,7 @@ __all__ = [
     "Product",
     "ProductVersion",
     "RecoveryCode",
+    "Report",
     "RuleRow",
     "Ruleset",
     "User",
