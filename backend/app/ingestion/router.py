@@ -45,6 +45,13 @@ class FileOut(BaseModel):
 
 class FilePageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    # `id`/`file_id` were missing until P6-T4 needed them: the label viewer
+    # correlates a `Finding`'s evidence (`EvidenceDetailOut.file_page_id`)
+    # back to the exact page to open, and `page_no` alone is ambiguous
+    # across a multi-file product version (page 1 of file A vs. page 1 of
+    # file B) - only the real `file_pages.id` disambiguates.
+    id: uuid.UUID
+    file_id: uuid.UUID
     page_no: int
     width: int
     height: int

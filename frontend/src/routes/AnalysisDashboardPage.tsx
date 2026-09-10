@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError } from "@/api/client";
@@ -8,6 +9,7 @@ import type {
   ReportSnapshot,
   Severity,
 } from "@/api/types";
+import { LabelViewer } from "@/components/LabelViewer";
 import {
   useAnalysis,
   useAnalysisEvents,
@@ -98,6 +100,7 @@ export function AnalysisDashboardPage() {
   const { connected } = useAnalysisSse(analysisId);
   const generateReport = useGenerateReport(analysisId ?? "");
   const { showToast } = useToast();
+  const [selectedFindingId, setSelectedFindingId] = useState<string | undefined>(undefined);
 
   if (isPending) return <p className="text-slate-600">Loading analysis…</p>;
   if (error || !analysis) return <p className="text-red-700">Could not load this analysis.</p>;
@@ -211,6 +214,13 @@ export function AnalysisDashboardPage() {
         </ol>
       )}
 
+      <h2 className="mt-8 text-lg font-medium text-slate-900">Label viewer</h2>
+      {versionId && (
+        <div className="mt-3">
+          <LabelViewer versionId={versionId} selectedFindingId={selectedFindingId} />
+        </div>
+      )}
+
       <h2 className="mt-8 text-lg font-medium text-slate-900">Compliance findings</h2>
       {findings && findings.length === 0 && (
         <p className="mt-2 text-slate-600">
@@ -219,26 +229,45 @@ export function AnalysisDashboardPage() {
       )}
       {findings && findings.length > 0 && (
         <ul className="mt-4 divide-y divide-slate-200 rounded-md border border-slate-200 bg-white">
-          {findings.map((finding) => (
-            <li key={finding.id} className="flex items-center justify-between px-4 py-3">
-              <div>
-                <p className="font-medium text-slate-900">{finding.rule_key}</p>
-                {finding.message && <p className="text-sm text-slate-600">{finding.message}</p>}
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${SEVERITY_STYLES[finding.severity]}`}
+          {findings.map((finding) => {
+            const hasEvidence = finding.evidence_refs.length > 0;
+            const isSelected = finding.id === selectedFindingId;
+            return (
+              <li key={finding.id}>
+                <button
+                  type="button"
+                  disabled={!hasEvidence}
+                  onClick={() => setSelectedFindingId(finding.id)}
+                  aria-pressed={isSelected}
+                  className={`flex w-full items-center justify-between px-4 py-3 text-left ${
+                    hasEvidence ? "cursor-pointer hover:bg-slate-50" : "cursor-default"
+                  } ${isSelected ? "bg-amber-50" : ""}`}
                 >
-                  {finding.severity}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${FINDING_STATUS_STYLES[finding.status]}`}
-                >
-                  {finding.status}
-                </span>
-              </div>
-            </li>
-          ))}
+                  <div>
+                    <p className="font-medium text-slate-900">{finding.rule_key}</p>
+                    {finding.message && <p className="text-sm text-slate-600">{finding.message}</p>}
+                    {hasEvidence && (
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {isSelected ? "Showing evidence above ↑" : "Click to view evidence"}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${SEVERITY_STYLES[finding.severity]}`}
+                    >
+                      {finding.severity}
+                    </span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${FINDING_STATUS_STYLES[finding.status]}`}
+                    >
+                      {finding.status}
+                    </span>
+                  </div>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
 

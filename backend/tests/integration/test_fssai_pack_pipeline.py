@@ -21,7 +21,15 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.analysis.stages import _classifying, _evidence_verification, _normalizing, _rule_eval
+from app.analysis.models import ConfidenceTier
+from app.analysis.stages import (
+    _classifying,
+    _evidence_verification,
+    _normalizing,
+    _rule_eval,
+    _scoring,
+)
+from app.confidence.tiers import compute_analysis_tier
 from app.findings.models import Finding, FindingEvidence
 from app.rules.loader import load_pack_from_directory
 from app.rules.publish import publish_pack
@@ -73,7 +81,7 @@ COMPLIANT_LABEL_JSON = """
   "dates_manufacture": {"value": "01/2026", "not_found_reason": null,
                         "token_ids": [2], "confidence": 0.9},
   "dates_expiry_or_best_before": {"value": "12/2027", "not_found_reason": null,
-                                  "token_ids": [3], "confidence": 0.8},
+                                  "token_ids": [3], "confidence": 0.95},
   "dates_batch_number": {"value": "B12345", "not_found_reason": null,
                          "token_ids": [6], "confidence": 0.9},
   "claims": [], "claims_not_found_reason": "no claims printed",
@@ -172,6 +180,57 @@ class TestRealAnalysisAgainstTheRealFssaiPack:
             select(FindingEvidence).where(FindingEvidence.finding_id == net_qty_finding.id)
         ).all()
         assert len(edges) >= 1
+
+    def test_a_field_no_fssai_rule_depends_on_no_longer_blocks_auto_completion(
+        self, db, basic
+    ) -> None:
+        """2026-09-10: `compute_analysis_tier`'s own long-documented "next
+        step" - narrow to exactly the fields real findings depend on, once
+        `rule_eval` is real - proven through the real pipeline, not just the
+        isolated unit-level fixtures in `test_confidence_tiers.py`.
+        `COMPLIANT_LABEL_JSON`'s own `claims` is genuinely empty (a
+        completely normal, non-problematic label that simply prints no
+        promotional claims), which resolves to a `claims.items` field with
+        no value at all - before this narrowing existed, that alone would
+        have forced the whole analysis to Low/mandatory-review even though
+        no FSSAI rule in this pack has ever checked `claims.items` and every
+        field an FSSAI rule *does* depend on is cleanly, confidently
+        extracted."""
+        org, product, version, file, page, analysis = basic
+        product.category_hint = "packaged_food"
+        product.market_codes = ["IN"]
+        db.flush()
+        _add_full_ocr_tokens(db, org, page)
+
+        pack = load_pack_from_directory(PACK_DIR)
+        publish_pack(db, pack)
+        db.commit()
+
+        extraction = _extraction_for(db, org, analysis, text=COMPLIANT_LABEL_JSON)
+        assert _evidence_verification(db, analysis) is None
+        db.commit()
+        assert _normalizing(db, analysis) is None
+        db.commit()
+        assert _classifying(db, analysis) is None
+        db.commit()
+        assert _rule_eval(db, analysis) is None
+        db.commit()
+
+        db.refresh(extraction)
+        # Confirm the premise directly: `claims.items` really did resolve to
+        # "not found" - the exact state that used to force Low regardless of
+        # narrowing - and is now excluded from the tier calculation entirely
+        # since no rule in this pack depends on it.
+        tier_result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+        assert not any(f.field_path == "claims.items" for f in tier_result.fields)
+
+        db.refresh(analysis)
+        next_state = _scoring(db, analysis)
+        db.commit()
+        db.refresh(analysis)
+
+        assert analysis.confidence_tier is ConfidenceTier.HIGH
+        assert next_state is None  # High tier falls through to the default successor
 
     def test_a_label_with_missing_and_garbled_declarations_tells_fail_from_insufficient_data(
         self, db, basic

@@ -28,6 +28,13 @@ export default defineConfig({
     {
       command:
         "..\\backend\\.venv\\Scripts\\python.exe -m alembic upgrade head && " +
+        // P6-T4: publishes the real `in-fssai-food` pack (idempotent - see
+        // `app.rules.publish.publish_pack`'s own docstring) so
+        // `analysis.spec.ts` can exercise real findings + evidence against
+        // this fresh Postgres, not just the extraction-only path P6-T3 left
+        // it in before D-01/P4-T5 existed.
+        "..\\backend\\.venv\\Scripts\\python.exe scripts\\publish_ruleset.py " +
+        "app\\rulesets\\in-fssai-food\\v1.0.0 && " +
         "..\\backend\\.venv\\Scripts\\python.exe -m uvicorn app.main:create_app --factory --port 8000",
       // If `.venv` fails to import `app.main` with a native-DLL
       // "Application Control policy" error, that's a machine-level

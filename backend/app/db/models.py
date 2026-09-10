@@ -10,6 +10,7 @@ from app.extraction.models import EvidenceSpan, ExtractedField, Extraction
 from app.findings.models import Finding, FindingEvidence
 from app.identity.models import ApiKey, Membership, Organization, RecoveryCode, User
 from app.reports.models import Report
+from app.review.models import FieldCorrection, FindingDecision
 from app.rules.models import RuleRow, Ruleset
 from app.vision.models import OcrResult, OcrTokenRow
 
@@ -33,6 +34,8 @@ TENANT_TABLES: tuple[str, ...] = (
     "evidence_spans",
     "findings",
     "finding_evidence",
+    "finding_decisions",
+    "field_corrections",
     "reports",
     "audit_logs",
 )
@@ -48,9 +51,11 @@ __all__ = [
     "EvidenceSpan",
     "ExtractedField",
     "Extraction",
+    "FieldCorrection",
     "File",
     "FilePage",
     "Finding",
+    "FindingDecision",
     "FindingEvidence",
     "Membership",
     "OcrResult",

@@ -56,11 +56,11 @@ export function useAnalysisEvents(analysisId: string | undefined) {
   });
 }
 
-/** Real, possibly-empty by design: `rule_eval` is an honest no-op
- * placeholder (D-01, first jurisdiction, not yet decided), so no analysis
- * has ever had a `Finding` row written for it - `GET .../findings` returns
- * `[]` for every real analysis today, not an error. Rendered as-is, never
- * padded with invented findings. */
+/** Real findings for India/packaged_food (D-01 resolved, `in-fssai-food`
+ * published - P4-T5); `[]` for any other jurisdiction/category, or one that
+ * was never classified, since no ruleset exists to evaluate against there
+ * yet (`app.analysis.stages._rule_eval`'s own honest no-op). Rendered as-is
+ * either way, never padded with invented findings. */
 export function useFindings(analysisId: string | undefined) {
   return useQuery({
     queryKey: findingsQueryKey(analysisId ?? ""),

@@ -838,6 +838,16 @@ export interface components {
     };
     /** FilePageOut */
     FilePageOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * File Id
+       * Format: uuid
+       */
+      file_id: string;
       /** Page No */
       page_no: number;
       /** Width */

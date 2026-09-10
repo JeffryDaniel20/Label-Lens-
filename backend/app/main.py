@@ -39,6 +39,7 @@ from app.platform.middleware import (
 from app.platform.ratelimit import MemoryCounterStore, RateLimiter, RedisCounterStore
 from app.platform.sentry import init_sentry
 from app.reports.router import router as reports_router
+from app.review.router import router as review_router
 from app.storage.client import build_storage_client
 from app.storage.router import router as storage_router
 
@@ -215,4 +216,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analysis_router)
     app.include_router(findings_router)
     app.include_router(reports_router)
+    app.include_router(review_router)
     return app

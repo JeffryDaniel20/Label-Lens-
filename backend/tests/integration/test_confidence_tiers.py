@@ -8,6 +8,7 @@ confidence math has its own unit suite in
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import pytest
@@ -18,6 +19,10 @@ from app.analysis.stages import _scoring
 from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
 from app.confidence.tiers import compute_analysis_tier
 from app.extraction.models import ExtractedField, Extraction
+from app.findings.models import Finding
+from app.rules.evaluator import FindingStatus
+from app.rules.models import RuleRow, Ruleset
+from app.rules.schema import Severity
 from app.vision.models import OcrResult, OcrTokenRow
 from tests.conftest import make_org
 
@@ -223,6 +228,180 @@ class TestComputeAnalysisTier:
 
         assert result.tier is ConfidenceTier.LOW
         assert result.fields[0].reason == "no fields were extracted"
+
+
+def _finding(
+    db, org, analysis, ruleset, *, rule_key: str, status: FindingStatus, evidence_fields: list[str]
+) -> Finding:
+    rule_row = RuleRow(
+        ruleset_id=ruleset.id,
+        rule_key=rule_key,
+        version=1,
+        title="t",
+        citation="c",
+        severity=Severity.MAJOR.value,
+        effective_from=dt.date(2024, 1, 1),
+        payload={},
+    )
+    db.add(rule_row)
+    db.flush()
+    finding = Finding(
+        organization_id=org.id,
+        analysis_id=analysis.id,
+        ruleset_id=ruleset.id,
+        rule_id=rule_row.id,
+        rule_key=rule_key,
+        rule_version=1,
+        status=status,
+        severity=Severity.MAJOR,
+        details={"reason": None, "evidence_fields": evidence_fields},
+        confidence=0.0,
+    )
+    db.add(finding)
+    db.flush()
+    return finding
+
+
+class TestRuleRelevantFieldsNarrowTheTier:
+    """2026-09-10: with `rule_eval` real (P5-T4) and a real ruleset published
+    (P4-T5/D-01), `compute_analysis_tier` narrows to exactly the fields real
+    findings named as relevant - this module's own long-documented "next
+    step," taken. Every test here persists real `Finding` rows directly
+    (not through `persist_findings`, which additionally needs real evidence
+    spans this test doesn't care about) - `compute_analysis_tier` only ever
+    reads `Finding.status`/`Finding.details`, proven by testing against
+    exactly that surface."""
+
+    def _ruleset(self, db) -> Ruleset:
+        ruleset = Ruleset(
+            jurisdiction="IN",
+            category="packaged_food",
+            version="1.0.0",
+            effective_from=dt.date(2024, 1, 1),
+            source_citations=["test"],
+            author="test",
+            review_date=dt.date(2024, 1, 1),
+            checksum=uuid.uuid4().hex,
+        )
+        db.add(ruleset)
+        db.flush()
+        return ruleset
+
+    def test_a_field_no_finding_depends_on_no_longer_drags_the_tier_down(
+        self, db, rig
+    ) -> None:
+        org, page, analysis, extraction = rig
+        ruleset = self._ruleset(db)
+        high_tok = _token(db, org, page, confidence=0.95)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.95, verified=True, cited_token_ids=[high_tok],
+        )
+        # A genuinely low-confidence field that no rule in this ruleset
+        # depends on - e.g. extracted for a different, unpublished pack.
+        _field(
+            db, org, extraction, field_path="dates.batch_number", value_raw="B1",
+            confidence=0.1, verified=True,
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-NET-QUANTITY-DECLARED", status=FindingStatus.PASS,
+            evidence_fields=["quantity.net_quantity"],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.HIGH
+        assert {f.field_path for f in result.fields} == {
+            "quantity.net_quantity", "classification.category", "classification.jurisdiction",
+        }
+
+    def test_a_field_a_finding_does_depend_on_still_forces_low_when_missing(
+        self, db, rig
+    ) -> None:
+        org, page, analysis, extraction = rig
+        ruleset = self._ruleset(db)
+        tok = _token(db, org, page, confidence=0.95)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.95, verified=True, cited_token_ids=[tok],
+        )
+        _field(
+            db, org, extraction, field_path="dates.batch_number", value_raw=None,
+            confidence=0.0, verified=None,
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-NET-QUANTITY-DECLARED", status=FindingStatus.PASS,
+            evidence_fields=["quantity.net_quantity"],
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-BATCH-NUMBER-DECLARED", status=FindingStatus.INSUFFICIENT_DATA,
+            evidence_fields=["dates.batch_number"],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.LOW
+
+    def test_not_applicable_findings_do_not_make_their_fields_relevant(
+        self, db, rig
+    ) -> None:
+        """A `not_applicable` finding's `evidence_fields` name what it *would*
+        have checked under a different jurisdiction/category - never fields
+        this label was actually judged against. A low-confidence field named
+        only by a `not_applicable` finding must stay irrelevant, not force
+        the tier down."""
+        org, page, analysis, extraction = rig
+        ruleset = self._ruleset(db)
+        high_tok = _token(db, org, page, confidence=0.95)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.95, verified=True, cited_token_ids=[high_tok],
+        )
+        _field(
+            db, org, extraction, field_path="dates.batch_number", value_raw="B1",
+            confidence=0.1, verified=True,
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-NET-QUANTITY-DECLARED", status=FindingStatus.PASS,
+            evidence_fields=["quantity.net_quantity"],
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-BATCH-NUMBER-DECLARED", status=FindingStatus.NOT_APPLICABLE,
+            evidence_fields=["dates.batch_number"],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.HIGH
+        assert "dates.batch_number" not in {f.field_path for f in result.fields}
+
+    def test_findings_that_are_all_not_applicable_fall_back_to_the_full_superset(
+        self, db, rig
+    ) -> None:
+        """Narrowing to an empty relevant-field set would silently drop every
+        field from consideration - never safe - so this behaves exactly like
+        "no findings at all"."""
+        org, page, analysis, extraction = rig
+        ruleset = self._ruleset(db)
+        _field(
+            db, org, extraction, field_path="dates.batch_number", value_raw=None,
+            confidence=0.0, verified=None,
+        )
+        _finding(
+            db, org, analysis, ruleset,
+            rule_key="IN-FSSAI-FOOD-BATCH-NUMBER-DECLARED", status=FindingStatus.NOT_APPLICABLE,
+            evidence_fields=["dates.batch_number"],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.LOW
+        assert any(f.field_path == "dates.batch_number" for f in result.fields)
 
 
 class TestClassificationSignalAffectsTier:

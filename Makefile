@@ -4,7 +4,7 @@ ifeq ($(wildcard $(PY)),)
 PY := backend/.venv/bin/python
 endif
 
-.PHONY: install test lint typecheck check migrate up down cov backup restore \
+.PHONY: install test lint typecheck check migrate up down cov backup restore new-rule \
 	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
 install: frontend-install
@@ -45,6 +45,13 @@ check: lint typecheck test frontend-check
 
 migrate:
 	cd backend && ../$(PY) -m alembic upgrade head
+
+# See docs/rules-authoring.md. e.g.:
+#   make new-rule PACK=app/rulesets/in-fssai-food/v1.0.0 KEY=IN-FSSAI-FOOD-X \
+#       FIELD=dates.batch_number TITLE="X is declared" CITATION="Regulation ..."
+new-rule:
+	cd backend && ../$(PY) scripts/new_rule.py "$(PACK)" "$(KEY)" --field "$(FIELD)" \
+		--title "$(TITLE)" --citation "$(CITATION)"
 
 up:
 	docker compose -f infra/docker-compose.yml up --build

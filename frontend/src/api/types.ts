@@ -24,6 +24,7 @@ export type FileOut = components["schemas"]["FileOut"];
 export type FileStatus = components["schemas"]["FileStatus"];
 export type AvStatus = components["schemas"]["AvStatus"];
 export type FilePageOut = components["schemas"]["FilePageOut"];
+export type EvidenceDetailOut = components["schemas"]["EvidenceDetailOut"];
 
 export type AnalysisOut = components["schemas"]["AnalysisOut"];
 export type AnalysisState = components["schemas"]["AnalysisState"];

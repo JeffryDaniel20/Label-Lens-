@@ -133,6 +133,11 @@ class TestUploadCompletionHappyPath:
         assert len(pages) == 1
         assert pages[0]["page_no"] == 1
         assert pages[0]["width"] == 40 and pages[0]["height"] == 30
+        # P6-T4: the label viewer correlates a finding's evidence
+        # (`file_page_id`) back to this exact page - `id`/`file_id` must be
+        # real, distinct UUIDs, not just present.
+        assert uuid.UUID(pages[0]["id"])
+        assert pages[0]["file_id"] == file_id
         get = httpx.get(
             owner.get("/v1/files/download-url", params={"key": pages[0]["render_key"]}).json()[
                 "url"

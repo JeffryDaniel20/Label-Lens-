@@ -46,6 +46,8 @@ class AuditAction(enum.StrEnum):
     FILE_REJECTED = "file.rejected"
     ANALYSIS_SUBMITTED = "analysis.submitted"
     ANALYSIS_CANCELLED = "analysis.cancelled"
+    FINDING_DECIDED = "finding.decided"
+    FIELD_CORRECTED = "field.corrected"
 
 
 class AuditLog(UUIDPrimaryKey, Base):

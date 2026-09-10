@@ -5,136 +5,80 @@ JSON files below, then the files themselves (not this script) are what
 `tests/rules/test_in_fssai_food_pack.py` actually loads and asserts against.
 Kept in `scripts/` for reproducibility (regenerate if a fixture needs to
 change) rather than hand-editing 20+ JSON files directly.
+
+Shares its "fully-compliant label" baseline with P4-T6's `new_rule.py` via
+`_fixture_baseline.py` - see that module's own docstring for why there is
+deliberately only one such baseline in this codebase.
 """
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
+
+from _fixture_baseline import BASE_COMPLIANT_FACTS as BASE
+from _fixture_baseline import fact, with_field
 
 from app.extraction.facts import LabelFacts
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "app/rulesets/in-fssai-food/v1.0.0/fixtures"
 
-
-def _fact(value: object, reason: str | None = None) -> dict[str, object]:
-    if reason is not None:
-        return {"value": None, "not_found_reason": reason}
-    return {"value": value, "not_found_reason": None}
-
-
-BASE: dict[str, object] = {
-    "schema_version": "1.0.0",
-    "ingredients": {
-        "declared_text": _fact("Sugar, Wheat Flour, Milk Solids, Cocoa Solids"),
-        "items": _fact(
-            [
-                {"name": "Sugar", "position": 0, "percentage": None},
-                {"name": "Wheat Flour", "position": 1, "percentage": None},
-                {"name": "Milk Solids", "position": 2, "percentage": None},
-                {"name": "Cocoa Solids", "position": 3, "percentage": None},
-            ]
-        ),
-    },
-    "allergens": {
-        "declaration_text": _fact("Contains: Wheat, Milk"),
-        "declared": _fact(["Wheat", "Milk"]),
-    },
-    "nutrition": {
-        "serving_size": _fact("30 g"),
-        "rows": _fact(
-            [
-                {"nutrient": "Energy", "unit": "kcal", "per_100g": 450.0, "per_serving": 135.0},
-                {"nutrient": "Protein", "unit": "g", "per_100g": 6.0, "per_serving": 1.8},
-            ]
-        ),
-    },
-    "quantity": {"net_quantity": _fact("100 g")},
-    "dates": {
-        "manufacture_date": _fact("01/2026"),
-        "expiry_or_best_before": _fact("01/2027"),
-        "batch_number": _fact("B12345"),
-    },
-    "claims": {"items": _fact([])},
-    "addresses": {
-        "items": _fact(
-            [
-                {
-                    "role": "manufacturer",
-                    "text": "ABC Foods Pvt Ltd, MIDC, Pune, Maharashtra 411019, India",
-                }
-            ]
-        )
-    },
-    "languages": {"detected": _fact(["en"])},
-}
-
-
-def _set(
-    facts: dict[str, object], section: str, field: str, value: dict[str, object]
-) -> dict[str, object]:
-    out = copy.deepcopy(facts)
-    out[section][field] = value  # type: ignore[index]
-    return out
-
-
 # rule_key -> (pass_facts, fail_facts | None, insufficient_facts)
 CASES: dict[str, tuple[dict[str, object], dict[str, object] | None, dict[str, object]]] = {
     "IN-FSSAI-FOOD-INGREDIENTS-LIST-DECLARED": (
         BASE,
-        _set(BASE, "ingredients", "declared_text", _fact("   ")),
-        _set(BASE, "ingredients", "declared_text", _fact(None, "no ingredient list printed")),
+        with_field(BASE, "ingredients.declared_text", fact("   ")),
+        with_field(BASE, "ingredients.declared_text", fact(None, "no ingredient list printed")),
     ),
     "IN-FSSAI-FOOD-INGREDIENTS-ITEMS-ITEMIZED": (
         BASE,
         None,
-        _set(BASE, "ingredients", "items", _fact(None, "ingredient list illegible")),
+        with_field(BASE, "ingredients.items", fact(None, "ingredient list illegible")),
     ),
     "IN-FSSAI-FOOD-ALLERGEN-NAMES-RECOGNIZED": (
         BASE,
-        _set(BASE, "allergens", "declared", _fact(["Wheat", "Unobtainium"])),
-        _set(BASE, "allergens", "declared", _fact(None, "allergen statement illegible")),
+        with_field(BASE, "allergens.declared", fact(["Wheat", "Unobtainium"])),
+        with_field(BASE, "allergens.declared", fact(None, "allergen statement illegible")),
     ),
     "IN-FSSAI-FOOD-NET-QUANTITY-DECLARED": (
         BASE,
-        _set(BASE, "quantity", "net_quantity", _fact("  ")),
-        _set(BASE, "quantity", "net_quantity", _fact(None, "net quantity not printed")),
+        with_field(BASE, "quantity.net_quantity", fact("  ")),
+        with_field(BASE, "quantity.net_quantity", fact(None, "net quantity not printed")),
     ),
     "IN-FSSAI-FOOD-MANUFACTURE-DATE-DECLARED": (
         BASE,
-        _set(BASE, "dates", "manufacture_date", _fact("  ")),
-        _set(BASE, "dates", "manufacture_date", _fact(None, "manufacture date not printed")),
+        with_field(BASE, "dates.manufacture_date", fact("  ")),
+        with_field(BASE, "dates.manufacture_date", fact(None, "manufacture date not printed")),
     ),
     "IN-FSSAI-FOOD-EXPIRY-DATE-DECLARED": (
         BASE,
-        _set(BASE, "dates", "expiry_or_best_before", _fact("  ")),
-        _set(BASE, "dates", "expiry_or_best_before", _fact(None, "expiry date not printed")),
+        with_field(BASE, "dates.expiry_or_best_before", fact("  ")),
+        with_field(BASE, "dates.expiry_or_best_before", fact(None, "expiry date not printed")),
     ),
     "IN-FSSAI-FOOD-BATCH-NUMBER-DECLARED": (
         BASE,
-        _set(BASE, "dates", "batch_number", _fact("  ")),
-        _set(BASE, "dates", "batch_number", _fact(None, "batch number not printed")),
+        with_field(BASE, "dates.batch_number", fact("  ")),
+        with_field(BASE, "dates.batch_number", fact(None, "batch number not printed")),
     ),
     "IN-FSSAI-FOOD-BRAND-OWNER-ADDRESS-DECLARED": (
         BASE,
         None,
-        _set(BASE, "addresses", "items", _fact(None, "no address block found")),
+        with_field(BASE, "addresses.items", fact(None, "no address block found")),
     ),
     "IN-FSSAI-FOOD-NUTRITION-INFO-DECLARED": (
         BASE,
         None,
-        _set(BASE, "nutrition", "rows", _fact(None, "nutrition table not printed")),
+        with_field(BASE, "nutrition.rows", fact(None, "nutrition table not printed")),
     ),
     "IN-FSSAI-FOOD-NUTRITION-SERVING-SIZE-DECLARED": (
         BASE,
-        _set(BASE, "nutrition", "serving_size", _fact("  ")),
-        _set(BASE, "nutrition", "serving_size", _fact(None, "serving size not printed")),
+        with_field(BASE, "nutrition.serving_size", fact("  ")),
+        with_field(BASE, "nutrition.serving_size", fact(None, "serving size not printed")),
     ),
     "IN-FSSAI-FOOD-LABEL-LANGUAGE-COMPLIANT": (
         BASE,
-        _set(BASE, "languages", "detected", _fact(["ta"])),
-        _set(BASE, "languages", "detected", _fact(None, "no legible text detected")),
+        with_field(BASE, "languages.detected", fact(["ta"])),
+        with_field(BASE, "languages.detected", fact(None, "no legible text detected")),
     ),
 }
 

@@ -31,21 +31,19 @@ composed with P3-T2, not a gap), so a separate top-level preprocessing pass
 would either duplicate that work or run it on pages `ocr` hasn't reached yet
 for no benefit.
 
-`rule_eval` is real now too (P5-T4, 2026-09-10), but genuinely still a
-no-op in this repository today, not a hollow wrapper pretending otherwise:
-`_rule_eval` resolves whether a published `Ruleset` actually exists for the
-analysis's own classified jurisdiction/category
-(`app.rules.publish.find_active_ruleset`) and only evaluates + persists
-findings if one does. No ruleset has ever been published for any
-jurisdiction in this codebase - that waits on **D-01** (first jurisdiction)
-actually being decided, not just proposed, and real rule content (P4-T5) -
-so `find_active_ruleset` always returns `None` today and this stage
-advances having done nothing, exactly like the placeholder it replaces.
-`app/rules/evaluator.py` itself has been done and 100%-tested since P4-T3;
-this is only the wiring that lets it actually run the moment a real
-ruleset exists, with no further code change here. An abstained
-classification (`analysis.category is None`, P3-T9) is skipped the same
-honest way - there is nothing to look a ruleset up for.
+`rule_eval` is real now too (P5-T4, 2026-09-10): `_rule_eval` resolves
+whether a published `Ruleset` actually exists for the analysis's own
+classified jurisdiction/category (`app.rules.publish.find_active_ruleset`)
+and only evaluates + persists findings if one does. D-01 (first
+jurisdiction) is resolved - India/FSSAI, packaged food - and a real pack is
+published (`in-fssai-food` v1.0.0, P4-T5), so for that one jurisdiction/
+category this stage now genuinely evaluates real regulation content and
+persists real findings; for every other jurisdiction/category
+`find_active_ruleset` still returns `None` and this stage advances having
+done nothing, exactly like the placeholder it originally replaced - both
+outcomes are the same honest, no-fabrication design, not two different code
+paths. An abstained classification (`analysis.category is None`, P3-T9) is
+skipped the same honest way - there is nothing to look a ruleset up for.
 
 `scoring` is real now too (P3-T8): `app.confidence.tiers.compute_analysis_tier`
 rolls every extracted field's confidence *and* the analysis's own
@@ -55,18 +53,16 @@ like a missing/demoted field does, so `_classifying` running earlier in
 this same chain isn't just informational. `_scoring` routes explicitly -
 `high` falls through to `DEFAULT_NEXT_STATE[SCORING] = COMPLETED`, anything
 else returns `needs_review` directly, matching §14's "any analysis in
-Medium/Low tier ...
-routes to review." It still cannot weigh real compliance findings, since
-`rule_eval` produces none today - not because it structurally can't
-(P5-T4's persistence is real and wired, see above), but because no ruleset
-has ever been published for any jurisdiction (D-01) - a `completed`
-analysis today means "nothing was checked," not "compliant," and
-`compute_analysis_tier` computes over *every* extracted field rather than
-"fields any triggered rule depends on" because no ruleset can be resolved
-to say which fields those are (see that module's own docstring for why
-this is a safe, documented superset rather than a silent narrowing). A
-real ruleset being published is what closes that gap, not a change to
-`scoring` or `rule_eval`'s own wiring.
+Medium/Low tier ... routes to review." **2026-09-10: it now weighs real
+compliance findings whenever `rule_eval` produced any** -
+`compute_analysis_tier` narrows to exactly "fields any triggered rule
+depends on" (via each persisted `Finding`'s own `evidence_fields`) rather
+than every extracted field, so a field no FSSAI rule cares about (e.g.
+`claims.items`) no longer forces mandatory review on its own; when no
+findings exist at all (an abstained classification, or a jurisdiction/
+category D-01 hasn't resolved), it still falls back to the original,
+documented-safe superset of every extracted field - see
+`app.confidence.tiers`'s own docstring for the full reasoning either way.
 
 Note on cost: `_extracting` records the provider's reported **token** usage
 via P5-T5's `record_stage_cost`, but not cents - converting tokens to money

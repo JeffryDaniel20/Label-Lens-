@@ -22,16 +22,23 @@ confidence - it is forced straight to Low, with a stated reason, matching
 the acceptance criterion's own test line: "a missing rule-relevant field
 forces Low."
 
-**Scoping decision, documented rather than silently narrowed:** §14 defines
-the analysis tier as "the worst tier among fields any triggered rule depends
-on." No ruleset can be resolved yet (`rule_eval` is still a placeholder,
-blocked on D-01 - see `app.analysis.stages`), so there is no set of
-"triggered rules" to consult. Until that exists, this module computes the
-tier over *every* field this extraction persisted, which is the safe
-superset of whatever subset a real ruleset will eventually narrow it to -
-never a smaller set than the real one, so this can only make the tier equal
-or more conservative, never falsely High. `compute_analysis_tier` is the one
-place that narrowing will happen once `rule_eval` is real.
+**Narrowing, now real (2026-09-10):** §14 defines the analysis tier as "the
+worst tier among fields any triggered rule depends on." `rule_eval` is real
+now (P5-T4) and a real ruleset exists (P4-T5/D-01), so `compute_analysis_tier`
+narrows to exactly that set whenever it can: the union of every applicable
+`Finding`'s own `evidence_fields` (from `Finding.details`, the evaluator's
+own record of which fields that rule depended on) for this analysis -
+`not_applicable` findings are excluded, since their `evidence_fields` name
+fields a rule *would* have checked for a different jurisdiction/category,
+never ones this label was actually judged against. When no findings exist
+at all - classification abstained, or no ruleset was ever published for this
+jurisdiction/category (still true for every jurisdiction but IN/
+packaged_food today) - there is no real "triggered rules" set to narrow to,
+so this falls back to the original, documented-safe superset: every field
+this extraction persisted. That superset can only make the tier equal or
+more conservative than the narrowed set would, never falsely High, which is
+exactly why it was the right default before real rule content existed and
+remains the right fallback now for every jurisdiction D-01 hasn't resolved.
 
 CLASSIFICATION AS A SIGNAL
 --------------------------
@@ -70,6 +77,8 @@ from sqlalchemy.orm import Session
 
 from app.analysis.models import Analysis, ConfidenceTier
 from app.extraction.models import ExtractedField, Extraction
+from app.findings.models import Finding
+from app.rules.evaluator import FindingStatus
 from app.vision.models import OcrTokenRow
 
 CONFIDENCE_VERSION = "1.0.0"
@@ -131,6 +140,30 @@ def _cited_token_confidence(db: Session, token_ids: list[str]) -> float:
     return min(confidences)
 
 
+def _rule_relevant_fields(db: Session, analysis: Analysis) -> set[str] | None:
+    """The union of every applicable `Finding`'s own `evidence_fields` for
+    this analysis, or `None` when there is nothing to narrow to (no findings
+    exist at all - classification abstained, or `rule_eval` found no
+    published ruleset for this jurisdiction/category). `not_applicable`
+    findings are excluded: their `evidence_fields` name fields a rule *would*
+    check under a different jurisdiction/category, never ones this label was
+    actually judged against."""
+    findings = db.scalars(
+        select(Finding).where(
+            Finding.analysis_id == analysis.id,
+            Finding.status != FindingStatus.NOT_APPLICABLE,
+        )
+    ).all()
+    if not findings:
+        return None
+    relevant: set[str] = set()
+    for finding in findings:
+        evidence_fields = finding.details.get("evidence_fields")
+        if isinstance(evidence_fields, list):
+            relevant.update(path for path in evidence_fields if isinstance(path, str))
+    return relevant
+
+
 _ABSTENTION_REASON = (
     "classification abstained - no category/jurisdiction could be determined "
     "with enough confidence to route to rules safely"
@@ -188,7 +221,11 @@ def compute_analysis_tier(
     field's own confidence, tier, and (when forced) the reason it was forced
     are all returned, not just the final rolled-up tier. `analysis` supplies
     the classification (P3-T9) half of the signal - `category_confidence`/
-    `jurisdiction_confidence` live on `Analysis`, not `ExtractedField`."""
+    `jurisdiction_confidence` live on `Analysis`, not `ExtractedField`. Also
+    supplies the narrowing (P5-T4/P4-T5) half: see `_rule_relevant_fields`
+    and this module's own docstring for why a field no triggered rule
+    depends on no longer drags the tier down once real findings exist to
+    narrow to."""
     rows = db.scalars(
         select(ExtractedField).where(ExtractedField.extraction_id == extraction.id)
     ).all()
@@ -202,6 +239,14 @@ def compute_analysis_tier(
         )
         no_fields = [missing, *_classification_tiers(analysis)]
         return AnalysisTierResult(tier=ConfidenceTier.LOW, fields=tuple(no_fields))
+
+    # An empty (but non-`None`) set - every finding that exists is
+    # `not_applicable` - is treated the same as `None`: narrowing to nothing
+    # would silently drop every field from the tier calculation, which is
+    # never safe, so fall back to the full superset in that case too.
+    relevant_fields = _rule_relevant_fields(db, analysis) or None
+    if relevant_fields is not None:
+        rows = [row for row in rows if row.field_path in relevant_fields]
 
     fields: list[FieldTier] = []
     for row in rows:

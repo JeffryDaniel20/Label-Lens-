@@ -49,6 +49,13 @@ test("upload, start analysis, observe live progress, reload, and reach a real te
   await page.getByRole("button", { name: "New product" }).click();
   await page.getByLabel("Name").fill("Masala Chips");
   await page.getByLabel("Internal SKU").fill(`MC-${Date.now()}`);
+  // A declared IN market code gives `_jurisdiction_from_hints` an exact
+  // match (P3-T9) - the best real chance this run actually reaches a
+  // resolved IN/packaged_food classification and, with it, real findings
+  // against the real published `in-fssai-food` pack (P4-T5/D-01) - never
+  // asserted as certain below, since that still also depends on what
+  // Gemini's own real extraction of the fixture label yields.
+  await page.getByLabel("Market codes (comma separated)").fill("IN");
   await page.getByRole("button", { name: "Create product" }).click();
 
   await page.getByText("Masala Chips").click();
@@ -98,13 +105,31 @@ test("upload, start analysis, observe live progress, reload, and reach a real te
     // `completed` or `needs_review`: a confidence tier must be present
     // (`_scoring` always sets one before either state is reached), and
     // generating the real extraction report must show real extracted
-    // fields - never invented ones, and compliance findings must render as
-    // whatever the backend actually returned (empty today, since D-01/
-    // `rule_eval` remains unresolved - not faked as "compliant").
+    // fields - never invented ones.
     await expect(status.getByText(/confidence$/)).toBeVisible();
-    await expect(
-      page.getByText("No compliance findings are available for this analysis."),
-    ).toBeVisible();
+
+    // Compliance findings must render as whatever the backend actually
+    // returned - real, evidence-traced findings against the real published
+    // `in-fssai-food` pack (P4-T5/D-01) if this run's real classification
+    // resolved to IN/packaged_food, or the honest empty state otherwise
+    // (a different/unresolved jurisdiction, or an abstained classification -
+    // both real, legitimate outcomes of a live extraction this test does
+    // not control). Never asserted as one or the other in advance.
+    const findingWithEvidence = page.getByRole("button", { name: /Click to view evidence/ });
+    const noFindingsMessage = page.getByText(
+      "No compliance findings are available for this analysis.",
+    );
+    await expect(findingWithEvidence.or(noFindingsMessage).first()).toBeVisible();
+
+    if (await findingWithEvidence.count()) {
+      // The literal P6-T4 acceptance criterion: selecting a finding brings
+      // its real evidence into view. Clicking switches the label viewer to
+      // the evidence's own page and renders a real bbox overlay, sized from
+      // the finding's own `EvidenceDetailOut.bbox` in the label's real pixel
+      // coordinate space - not a placeholder.
+      await findingWithEvidence.first().click();
+      await expect(page.getByTestId("evidence-bbox").first()).toBeVisible({ timeout: 10_000 });
+    }
 
     await page.getByRole("button", { name: "Generate extraction report" }).click();
     const fieldTable = page.getByRole("table");

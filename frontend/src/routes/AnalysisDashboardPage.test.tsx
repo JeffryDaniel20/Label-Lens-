@@ -39,6 +39,24 @@ vi.mock("@/features/analysis/analysis", () => ({
 }));
 vi.mock("@/features/analysis/useAnalysisSse", () => ({ useAnalysisSse: useAnalysisSseMock }));
 vi.mock("@/features/auth/session", () => ({ useSession: useSessionMock }));
+// The label viewer canvas (P6-T4) is its own dedicated suite
+// (`LabelViewer.test.tsx`) - stubbed here to a plain marker so this file
+// stays focused on dashboard-level behavior, and to prove the dashboard
+// wires the *selected finding* through correctly (the one thing that
+// crosses the boundary between the two).
+vi.mock("@/components/LabelViewer", () => ({
+  LabelViewer: ({
+    versionId,
+    selectedFindingId,
+  }: {
+    versionId: string;
+    selectedFindingId?: string;
+  }) => (
+    <div data-testid="label-viewer">
+      viewer for {versionId}, selected: {selectedFindingId ?? "none"}
+    </div>
+  ),
+}));
 
 function renderPage() {
   const client = new QueryClient();
@@ -198,6 +216,58 @@ describe("AnalysisDashboardPage", () => {
     expect(screen.getByText("IN.FSSAI.NET_QUANTITY")).toBeInTheDocument();
     expect(screen.getByText("major")).toBeInTheDocument();
     expect(screen.getByText("fail")).toBeInTheDocument();
+  });
+
+  it("selects a finding with evidence and passes it to the label viewer", async () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useFindingsMock.mockReturnValue({
+      data: [
+        {
+          id: "f1",
+          analysis_id: "a1",
+          rule_key: "IN-FSSAI-FOOD-NET-QUANTITY-DECLARED",
+          rule_version: 1,
+          status: "pass",
+          severity: "critical",
+          message: "Net quantity is declared.",
+          details: {},
+          confidence: 0.95,
+          evidence_refs: [{ extracted_field_id: "ef1", evidence_span_id: "es1" }],
+        },
+        {
+          id: "f2",
+          analysis_id: "a1",
+          rule_key: "IN-FSSAI-FOOD-INGREDIENTS-ITEMS-ITEMIZED",
+          rule_version: 1,
+          status: "insufficient_data",
+          severity: "minor",
+          message: null,
+          details: {},
+          confidence: 0,
+          evidence_refs: [],
+        },
+      ],
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+
+    expect(screen.getByTestId("label-viewer")).toHaveTextContent("selected: none");
+
+    // A finding with no evidence (`f2`) cannot be selected - the button is
+    // disabled, matching P5-T4's own contract that insufficient_data/
+    // not_applicable findings carry no evidence rows.
+    expect(
+      screen.getByRole("button", { name: /IN-FSSAI-FOOD-INGREDIENTS-ITEMS-ITEMIZED/ }),
+    ).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /IN-FSSAI-FOOD-NET-QUANTITY-DECLARED/ }));
+
+    expect(screen.getByTestId("label-viewer")).toHaveTextContent("selected: f1");
   });
 
   it("generates an extraction report and shows the resulting field table", async () => {

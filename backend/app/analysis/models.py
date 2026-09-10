@@ -138,6 +138,15 @@ class Analysis(UUIDPrimaryKey, TimestampMixin, Base):
     jurisdictions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     category_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     jurisdiction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # P6-T5's field-correction re-evaluation (IMPLEMENTATION.md §12): "the
+    # re-evaluation creates a new analysis row referencing the parent - the
+    # original is never edited." `SET NULL` rather than `CASCADE`: deleting
+    # a parent analysis (never actually done in practice - analyses are
+    # effectively permanent) must not silently delete every correction
+    # re-evaluation spawned from it.
+    parent_analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analyses.id", ondelete="SET NULL"), default=None
+    )
 
 
 class AnalysisEvent(UUIDPrimaryKey, Base):
