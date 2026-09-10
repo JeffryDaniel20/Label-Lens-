@@ -4,12 +4,30 @@ ifeq ($(wildcard $(PY)),)
 PY := backend/.venv/bin/python
 endif
 
-.PHONY: install test lint typecheck check migrate up down cov
+.PHONY: install test lint typecheck check migrate up down cov backup restore \
+	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
-install:
+install: frontend-install
 	python -m venv backend/.venv
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -e "backend[dev]"
+
+frontend-install:
+	cd frontend && npm install
+
+frontend-test:
+	cd frontend && npm run test
+
+frontend-lint:
+	cd frontend && npm run lint
+
+frontend-typecheck:
+	cd frontend && npm run typecheck
+
+frontend-check: frontend-lint frontend-typecheck frontend-test
+
+frontend-e2e:
+	cd frontend && npm run e2e
 
 test:
 	cd backend && ../$(PY) -m pytest -q
@@ -23,7 +41,7 @@ lint:
 typecheck:
 	cd backend && ../$(PY) -m mypy
 
-check: lint typecheck test
+check: lint typecheck test frontend-check
 
 migrate:
 	cd backend && ../$(PY) -m alembic upgrade head
@@ -33,3 +51,12 @@ up:
 
 down:
 	docker compose -f infra/docker-compose.yml down -v
+
+# See docs/runbooks/backup-and-restore.md. DATABASE_URL/TARGET_DATABASE_URL
+# must point at a server with a matching-major-version pg_dump/pg_restore
+# on PATH - run these from inside a postgres:16-alpine container in dev.
+backup:
+	bash infra/scripts/backup_db.sh
+
+restore:
+	bash infra/scripts/restore_db.sh $(DUMP)

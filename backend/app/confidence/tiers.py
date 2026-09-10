@@ -1,7 +1,13 @@
-"""Confidence model and tier routing (P3-T8): combine OCR, extraction, and
-evidence-verification confidences into a per-field confidence, then roll
-those up into one analysis-level tier - IMPLEMENTATION.md §14's routing
-table, taken literally:
+"""Confidence model and tier routing (P3-T8): combine OCR, extraction,
+evidence-verification, AND classification (P3-T9) confidences into a
+per-field confidence, then roll those up into one analysis-level tier -
+IMPLEMENTATION.md §14's routing table, taken literally. §30's own objective
+line for this task is explicit that classification is one of the three
+signals to combine ("combine OCR/extraction/classification confidences into
+field and analysis tiers"), not an optional extra - found live, 2026-09-10,
+as a real gap: `_classifying` already computed and persisted
+`Analysis.category_confidence`/`jurisdiction_confidence`, but nothing ever
+read them back into the final tier before this.
 
     High   | all rule-relevant fields >= 0.90 and verified | auto-complete
     Medium | any field 0.70-0.90                           | "verify" queue
@@ -26,6 +32,32 @@ superset of whatever subset a real ruleset will eventually narrow it to -
 never a smaller set than the real one, so this can only make the tier equal
 or more conservative, never falsely High. `compute_analysis_tier` is the one
 place that narrowing will happen once `rule_eval` is real.
+
+CLASSIFICATION AS A SIGNAL
+--------------------------
+`app.classification.classifier.classify()` (P3-T9) never guesses - it either
+resolves a category/jurisdiction with a real, computed confidence, or it
+abstains entirely (`Analysis.category is None`). Both outcomes must affect
+the final tier, not just the per-field ones: an abstained classification
+means nothing downstream can be trusted to route to the right jurisdiction's
+rules at all (`rule_eval` needs a resolved category to even pick a
+ruleset), so it forces Low exactly like a missing/demoted field - the same
+"absence of data is never treated as compliance" principle (§1), applied to
+a signal that happens to live on `Analysis` rather than `ExtractedField`.
+
+A *resolved* classification is graded on its own calibrated scale, not
+force-fit onto the 0.90/0.70 field bands above: `classify()` only ever
+returns non-abstained once each signal already clears its own threshold
+(`CATEGORY_CONFIDENCE_THRESHOLD`/`JURISDICTION_CONFIDENCE_THRESHOLD`, both
+well under 0.70), so reusing the field bands verbatim would force every
+successful classification to Low regardless of how confident it actually
+was - not a real signal, just noise from comparing two differently-scaled
+numbers. Instead: confidence `>= 1.0` (every available signal agreed - an
+exact, fully-recognized user-declared hint, or every extractable fact
+present) is High-eligible; anything short of that ceiling but still past
+the classifier's own abstention threshold is a real, if incomplete, basis
+for a decision and caps the tier at Medium rather than authorizing full
+auto-completion on a partially-inferred jurisdiction.
 """
 
 from __future__ import annotations
@@ -36,7 +68,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.models import ConfidenceTier
+from app.analysis.models import Analysis, ConfidenceTier
 from app.extraction.models import ExtractedField, Extraction
 from app.vision.models import OcrTokenRow
 
@@ -99,10 +131,64 @@ def _cited_token_confidence(db: Session, token_ids: list[str]) -> float:
     return min(confidences)
 
 
-def compute_analysis_tier(db: Session, *, extraction: Extraction) -> AnalysisTierResult:
+_ABSTENTION_REASON = (
+    "classification abstained - no category/jurisdiction could be determined "
+    "with enough confidence to route to rules safely"
+)
+
+
+def _classification_tiers(analysis: Analysis) -> list[FieldTier]:
+    """The classification (P3-T9) half of the final tier - see the module
+    docstring's "CLASSIFICATION AS A SIGNAL" section for why this is graded
+    on its own scale rather than the OCR/extraction bands. Two entries
+    (category, jurisdiction), not one combined score, so a caller can see
+    *which* signal was weak - the same explainability the per-field entries
+    already give."""
+    if analysis.category is None:
+        return [
+            FieldTier(
+                field_path="classification.category",
+                confidence=analysis.category_confidence,
+                tier=ConfidenceTier.LOW,
+                reason=_ABSTENTION_REASON,
+            ),
+            FieldTier(
+                field_path="classification.jurisdiction",
+                confidence=analysis.jurisdiction_confidence,
+                tier=ConfidenceTier.LOW,
+                reason=_ABSTENTION_REASON,
+            ),
+        ]
+    return [
+        FieldTier(
+            field_path="classification.category",
+            confidence=analysis.category_confidence,
+            tier=(
+                ConfidenceTier.HIGH
+                if analysis.category_confidence >= 1.0
+                else ConfidenceTier.MEDIUM
+            ),
+        ),
+        FieldTier(
+            field_path="classification.jurisdiction",
+            confidence=analysis.jurisdiction_confidence,
+            tier=(
+                ConfidenceTier.HIGH
+                if analysis.jurisdiction_confidence >= 1.0
+                else ConfidenceTier.MEDIUM
+            ),
+        ),
+    ]
+
+
+def compute_analysis_tier(
+    db: Session, *, extraction: Extraction, analysis: Analysis
+) -> AnalysisTierResult:
     """Deterministic and explainable, per the acceptance criterion: every
     field's own confidence, tier, and (when forced) the reason it was forced
-    are all returned, not just the final rolled-up tier."""
+    are all returned, not just the final rolled-up tier. `analysis` supplies
+    the classification (P3-T9) half of the signal - `category_confidence`/
+    `jurisdiction_confidence` live on `Analysis`, not `ExtractedField`."""
     rows = db.scalars(
         select(ExtractedField).where(ExtractedField.extraction_id == extraction.id)
     ).all()
@@ -114,7 +200,8 @@ def compute_analysis_tier(db: Session, *, extraction: Extraction) -> AnalysisTie
             tier=ConfidenceTier.LOW,
             reason="no fields were extracted",
         )
-        return AnalysisTierResult(tier=ConfidenceTier.LOW, fields=(missing,))
+        no_fields = [missing, *_classification_tiers(analysis)]
+        return AnalysisTierResult(tier=ConfidenceTier.LOW, fields=tuple(no_fields))
 
     fields: list[FieldTier] = []
     for row in rows:
@@ -149,5 +236,6 @@ def compute_analysis_tier(db: Session, *, extraction: Extraction) -> AnalysisTie
             )
         )
 
+    fields.extend(_classification_tiers(analysis))
     overall = min(fields, key=lambda f: _TIER_RANK[f.tier]).tier
     return AnalysisTierResult(tier=overall, fields=tuple(fields))

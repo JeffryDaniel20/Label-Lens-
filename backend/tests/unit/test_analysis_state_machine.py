@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.analysis.models import TERMINAL_STATES, Analysis, AnalysisState
-from app.analysis.state_machine import ALLOWED_TRANSITIONS, transition
+from app.analysis.models import TERMINAL_STATES, Analysis, AnalysisEvent, AnalysisState
+from app.analysis.state_machine import ALLOWED_TRANSITIONS, _fit_reason, transition
 from app.catalog.models import Product, ProductVersion
 from app.platform.errors import StateInvalid
 from tests.conftest import make_org
@@ -49,7 +49,8 @@ class TestLegalTransitions:
             (AnalysisState.VALIDATING, AnalysisState.PREPROCESSING),
             (AnalysisState.PREPROCESSING, AnalysisState.OCR),
             (AnalysisState.OCR, AnalysisState.EXTRACTING),
-            (AnalysisState.EXTRACTING, AnalysisState.NORMALIZING),
+            (AnalysisState.EXTRACTING, AnalysisState.EVIDENCE_VERIFICATION),
+            (AnalysisState.EVIDENCE_VERIFICATION, AnalysisState.NORMALIZING),
             (AnalysisState.NORMALIZING, AnalysisState.CLASSIFYING),
             (AnalysisState.CLASSIFYING, AnalysisState.RULE_EVAL),
             (AnalysisState.RULE_EVAL, AnalysisState.SCORING),
@@ -97,6 +98,10 @@ class TestIllegalTransitionsAreRejected:
             (AnalysisState.QUEUED, AnalysisState.OCR),  # skipping stages
             (AnalysisState.QUEUED, AnalysisState.COMPLETED),  # skipping the whole pipeline
             (AnalysisState.VALIDATING, AnalysisState.QUEUED),  # going backwards
+            # P3-T6: evidence verification is its own mandatory checkpoint -
+            # extraction can no longer transition straight to normalizing,
+            # skipping the citation check entirely.
+            (AnalysisState.EXTRACTING, AnalysisState.NORMALIZING),
             (AnalysisState.SCORING, AnalysisState.REVIEW),  # must go through needs_review
             (AnalysisState.NEEDS_REVIEW, AnalysisState.COMPLETED),  # must go through review
             (AnalysisState.COMPLETED, AnalysisState.QUEUED),  # terminal -> anything
@@ -152,6 +157,41 @@ class TestTerminalSideEffects:
         transition(db, analysis, AnalysisState.FAILED)
         assert analysis.failure_stage == "validating"
         assert analysis.retryable is False
+
+
+class TestReasonIsFitToItsColumn:
+    """Found live: a real Gemini `429`/`503` error body can run well past
+    `AnalysisEvent.reason`'s `String(500)` column, which made the failure-
+    handling transition itself raise `StringDataRightTruncation` - the
+    analysis never even reached `failed`, it just stayed stuck retrying
+    forever. `transition()` must never let an oversized `reason` reach the
+    `INSERT` in the first place."""
+
+    def test_a_reason_within_the_limit_is_stored_unchanged(self, db, analysis) -> None:
+        transition(db, analysis, AnalysisState.VALIDATING)
+        transition(db, analysis, AnalysisState.FAILED, reason="short and simple")
+        event = db.query(AnalysisEvent).filter_by(to_state=AnalysisState.FAILED).one()
+        assert event.reason == "short and simple"
+
+    def test_an_oversized_reason_is_truncated_to_fit(self, db, analysis) -> None:
+        long_reason = "x" * 800
+        transition(db, analysis, AnalysisState.VALIDATING)
+        transition(db, analysis, AnalysisState.FAILED, reason=long_reason)
+        event = db.query(AnalysisEvent).filter_by(to_state=AnalysisState.FAILED).one()
+        assert event.reason is not None
+        assert len(event.reason) == 500
+        assert event.reason.endswith("…")
+
+    def test_fit_reason_leaves_none_and_short_strings_alone(self) -> None:
+        assert _fit_reason(None) is None
+        assert _fit_reason("fine") == "fine"
+        assert _fit_reason("x" * 500) == "x" * 500
+
+    def test_fit_reason_truncates_anything_longer(self) -> None:
+        result = _fit_reason("x" * 501)
+        assert result is not None
+        assert len(result) == 500
+        assert result.endswith("…")
 
 
 class TestEveryStateIsReachableAndCoversAllTransitions:

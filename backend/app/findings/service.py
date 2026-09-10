@@ -50,7 +50,12 @@ def persist_findings(
     invariant broke down somewhere and must not be silently persisted as if
     the finding were properly evidenced.
     """
-    tier_result = compute_analysis_tier(db, extraction=extraction)
+    # `analysis=analysis` (P3-T8, 2026-09-10): `compute_analysis_tier` now
+    # also folds classification confidence into its result - harmless here,
+    # since `field_confidence_by_path` below is only ever looked up by the
+    # real dotted `LabelFacts` paths a rule's `evidence_fields` name, never
+    # the synthetic `classification.*` entries that call adds.
+    tier_result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
     field_confidence_by_path = {f.field_path: f.confidence for f in tier_result.fields}
 
     rows: list[Finding] = []

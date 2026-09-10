@@ -1,0 +1,115 @@
+{
+  "addresses": {
+    "items": {
+      "not_found_reason": null,
+      "value": [
+        {
+          "role": "manufacturer",
+          "text": "ABC Foods Pvt Ltd, MIDC, Pune, Maharashtra 411019, India"
+        }
+      ]
+    }
+  },
+  "allergens": {
+    "declaration_text": {
+      "not_found_reason": null,
+      "value": "Contains: Wheat, Milk"
+    },
+    "declared": {
+      "not_found_reason": null,
+      "value": [
+        "Wheat",
+        "Unobtainium"
+      ]
+    }
+  },
+  "claims": {
+    "items": {
+      "not_found_reason": null,
+      "value": []
+    }
+  },
+  "dates": {
+    "batch_number": {
+      "not_found_reason": null,
+      "value": "B12345"
+    },
+    "expiry_or_best_before": {
+      "not_found_reason": null,
+      "value": "01/2027"
+    },
+    "manufacture_date": {
+      "not_found_reason": null,
+      "value": "01/2026"
+    }
+  },
+  "ingredients": {
+    "declared_text": {
+      "not_found_reason": null,
+      "value": "Sugar, Wheat Flour, Milk Solids, Cocoa Solids"
+    },
+    "items": {
+      "not_found_reason": null,
+      "value": [
+        {
+          "name": "Sugar",
+          "percentage": null,
+          "position": 0
+        },
+        {
+          "name": "Wheat Flour",
+          "percentage": null,
+          "position": 1
+        },
+        {
+          "name": "Milk Solids",
+          "percentage": null,
+          "position": 2
+        },
+        {
+          "name": "Cocoa Solids",
+          "percentage": null,
+          "position": 3
+        }
+      ]
+    }
+  },
+  "languages": {
+    "detected": {
+      "not_found_reason": null,
+      "value": [
+        "en"
+      ]
+    }
+  },
+  "nutrition": {
+    "rows": {
+      "not_found_reason": null,
+      "value": [
+        {
+          "nutrient": "Energy",
+          "per_100g": 450.0,
+          "per_serving": 135.0,
+          "unit": "kcal"
+        },
+        {
+          "nutrient": "Protein",
+          "per_100g": 6.0,
+          "per_serving": 1.8,
+          "unit": "g"
+        }
+      ]
+    },
+    "serving_size": {
+      "not_found_reason": null,
+      "value": "30 g"
+    }
+  },
+  "quantity": {
+    "net_quantity": {
+      "not_found_reason": null,
+      "value": "100 g"
+    }
+  },
+  "schema_version": "1.0.0"
+}

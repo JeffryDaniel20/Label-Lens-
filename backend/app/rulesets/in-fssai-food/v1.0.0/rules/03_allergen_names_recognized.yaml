@@ -1,0 +1,38 @@
+rule_key: IN-FSSAI-FOOD-ALLERGEN-NAMES-RECOGNIZED
+version: 1
+title: "Declared allergens are recognized allergen names"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 5(14): "The following foods and ingredients which are known to
+  cause allergy shall be declared separately as Contains ... (Name of
+  allergy causing ingredients)" - listing cereals containing gluten,
+  crustaceans, milk, eggs, fish, peanuts/tree nuts, soybeans, and sulphites
+  (>=10 mg/kg) as the recognized categories. This rule checks that every
+  name in a label's "Contains" declaration resolves to one of those
+  recognized categories (via the same allergen dictionary
+  `app.extraction.normalize.allergens` already uses), catching a garbled or
+  hallucinated allergen name; it is vacuously satisfied when no allergens
+  are declared, since Regulation 5(14) only requires the declaration when an
+  allergen is actually present.
+severity: major
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  for_each:
+    source: allergens.declared
+    assert:
+      in_allergen_dictionary: ""
+requires_fields:
+  - allergens.declared
+on_missing_fields: insufficient_data
+message:
+  pass: "Every declared allergen name is a recognized allergen category."
+  fail: "One or more declared allergen names are not recognized allergen categories."
+  insufficient_data: "Could not determine the label's declared allergens."
+evidence:
+  fields:
+    - allergens.declared

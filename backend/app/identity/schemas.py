@@ -56,6 +56,13 @@ class MeResponse(BaseModel):
     role: Role | None
     capabilities: list[str]
     memberships: list[MembershipOut]
+    # A cookie-session caller's CSRF token, so a page reload can recover it
+    # without re-authenticating - `login`/`signup` are the only other places
+    # this value is ever returned, and both happen once per session, not
+    # once per page load. `None` for an API-key caller, which has no CSRF
+    # token at all (bearer auth isn't subject to CSRF the way a browser
+    # cookie is).
+    csrf_token: str | None = None
 
 
 class SignupRequest(BaseModel):

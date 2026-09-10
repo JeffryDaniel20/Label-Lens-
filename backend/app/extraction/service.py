@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 
 from app.catalog.models import File, FilePage
 from app.db.session import tenant_scoped
-from app.extraction import evidence as evidence_gate
 from app.extraction import facts as facts_schema
 from app.extraction.llm import base as provider_base
 from app.extraction.llm import prompt as prompt_module
@@ -48,14 +47,14 @@ class ExtractionFailed(Exception):
 @dataclass(slots=True, frozen=True)
 class ExtractionOutcome:
     extraction: Extraction
-    # Already reflects P3-T6's demotions - never the model's raw, unverified
-    # output. `extraction.payload` (what actually got persisted) is built
-    # from this same, already-corrected object, not from an earlier one.
+    # The model's raw, as-extracted output - P3-T6's evidence-verification
+    # gate is a separate orchestrator stage now (`app.analysis.stages.
+    # _evidence_verification`, runs immediately after this one), not
+    # something this function calls itself. Nothing downstream of
+    # `extract_for_analysis` alone should treat a value here as verified.
     label_facts: facts_schema.LabelFacts
     tokens_in: int
     tokens_out: int
-    verified_field_count: int
-    demoted_field_count: int
 
 
 def load_ocr_tokens(
@@ -356,9 +355,11 @@ def extract_for_analysis(
         organization_id=organization_id,
         analysis_id=analysis_id,
         schema_version=facts_schema.SCHEMA_VERSION,
-        # Placeholder - overwritten below once P3-T6's verification gate has
-        # had a chance to demote anything that doesn't check out. Never
-        # read back before that overwrite happens.
+        # The model's raw, as-extracted output - P3-T6's evidence-verification
+        # gate now runs as its own later orchestrator stage
+        # (`app.analysis.stages._evidence_verification`), not here, and
+        # overwrites this once it has had a chance to demote anything that
+        # doesn't check out.
         payload=label_facts.model_dump(mode="json"),
         envelope=envelope.model_dump(mode="json"),
         provider=provider.name,
@@ -383,20 +384,9 @@ def extract_for_analysis(
         )
     db.flush()
 
-    # P3-T6: verify every field against its citations, demoting anything
-    # that doesn't check out - before `payload` is persisted, so a demotion
-    # is structural, not a flag something downstream must remember to check.
-    label_facts, summary = evidence_gate.verify_extraction(
-        db, extraction=extraction, label_facts=label_facts
-    )
-    extraction.payload = label_facts.model_dump(mode="json")
-    db.flush()
-
     return ExtractionOutcome(
         extraction=extraction,
         label_facts=label_facts,
         tokens_in=response.usage.tokens_in,
         tokens_out=response.usage.tokens_out,
-        verified_field_count=summary.verified_count,
-        demoted_field_count=summary.demoted_count,
     )

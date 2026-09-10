@@ -34,6 +34,8 @@ dependencies = [
     "arq>=0.26",
     "google-genai>=2.0",
     "weasyprint>=69.0",
+    "prometheus-client>=0.20",
+    "sentry-sdk[fastapi]>=2.0",
 ]
 
 [project.optional-dependencies]

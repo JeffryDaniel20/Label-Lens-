@@ -29,6 +29,8 @@ SENSITIVE_KEYS = {
     "totp",
     "recovery_codes",
     "password_hash",
+    "dsn",
+    "sentry_dsn",
 }
 
 REDACTED = "[redacted]"

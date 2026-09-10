@@ -20,6 +20,7 @@ from app.catalog import service as catalog_service
 from app.db.base import utcnow
 from app.db.session import tenant_scoped
 from app.platform.errors import NotFound, ValidationFailed
+from app.platform.metrics import DLQ_ARRIVALS_TOTAL
 
 
 def record_dead_letter(
@@ -41,6 +42,7 @@ def record_dead_letter(
     )
     db.add(dlq)
     db.flush()
+    DLQ_ARRIVALS_TOTAL.labels(reason=reason.value).inc()
     return dlq
 
 

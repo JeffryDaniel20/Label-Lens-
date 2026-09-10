@@ -6,12 +6,44 @@ integration suite in `tests/integration/test_extraction_verification.py`.
 
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
+
 import pytest
 
 from app.extraction import facts as facts_schema
-from app.extraction.evidence import DEMOTION_REASON, _demote, _normalize, partial_ratio
+from app.extraction.evidence import (
+    DEMOTION_REASON,
+    _demote,
+    _normalize,
+    _spans_multiple_pages,
+    partial_ratio,
+)
 
 pytestmark = pytest.mark.unit
+
+
+def _token(file_page_id: uuid.UUID) -> SimpleNamespace:
+    """A duck-typed stand-in for `OcrTokenRow` - `_spans_multiple_pages`
+    only ever reads `.file_page_id`, so a real DB-backed row isn't needed
+    for this pure logic."""
+    return SimpleNamespace(file_page_id=file_page_id)
+
+
+class TestSpansMultiplePages:
+    def test_a_single_token_never_spans_multiple_pages(self) -> None:
+        assert _spans_multiple_pages([_token(uuid.uuid4())]) is False
+
+    def test_multiple_tokens_on_the_same_page_do_not_span(self) -> None:
+        page = uuid.uuid4()
+        assert _spans_multiple_pages([_token(page), _token(page), _token(page)]) is False
+
+    def test_tokens_on_two_different_pages_do_span(self) -> None:
+        assert _spans_multiple_pages([_token(uuid.uuid4()), _token(uuid.uuid4())]) is True
+
+    def test_a_mix_of_same_and_different_pages_still_spans(self) -> None:
+        page = uuid.uuid4()
+        assert _spans_multiple_pages([_token(page), _token(page), _token(uuid.uuid4())]) is True
 
 
 class TestNormalize:

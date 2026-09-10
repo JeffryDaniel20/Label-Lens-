@@ -38,9 +38,15 @@ Queue names follow IMPLEMENTATION.md §16: `default`, `ocr` (CPU-heavy, low
 concurrency), `llm` (I/O-bound, higher concurrency) - `QUEUE_FOR_STAGE`
 picks which one a given stage's job belongs on. Both the OCR (P3-T2/this
 vertical-slice wiring) and LLM (P3-T5) stage bodies are real now, so a
-production deployment can genuinely run separate worker processes per queue,
+production deployment genuinely runs separate worker processes per queue,
 sized independently - a CPU-bound PaddleOCR pool and an I/O-bound Gemini
-pool have very different concurrency sweet spots.
+pool have very different concurrency sweet spots. `LABELLENS_WORKER_QUEUE`
+(`_worker_queue_name_from_env`, below) is what actually makes that
+startable via the standard `arq app.analysis.worker.WorkerSettings` CLI
+entrypoint alone: run it three times with `LABELLENS_WORKER_QUEUE` set to
+`default`/`ocr`/`llm` respectively (see `infra/docker-compose.yml`'s
+`worker-default`/`worker-ocr`/`worker-llm` services) rather than needing a
+bespoke script per queue.
 """
 
 from __future__ import annotations
@@ -64,6 +70,7 @@ from app.analysis.state_machine import transition
 from app.db import models as _models  # noqa: F401 - registers every mapped table's metadata
 from app.db.session import get_session_factory, init_engine, set_tenant_context
 from app.platform.config import Settings, get_settings
+from app.platform.metrics import STAGE_DURATION_SECONDS
 from app.reports.worker import render_report_pdf_job
 
 QUEUE_DEFAULT = "default"
@@ -158,8 +165,10 @@ async def run_analysis_stage(ctx: dict[str, Any], analysis_id: str, organization
             db.commit()
             return new_state.value
 
+        stage_being_run = analysis.state.value
         try:
-            new_state = advance_analysis(db, analysis, worker_id=worker_id)
+            with STAGE_DURATION_SECONDS.labels(stage=stage_being_run).time():
+                new_state = advance_analysis(db, analysis, worker_id=worker_id)
         except (TransientStageError, PermanentStageError) as exc:
             attempt = int(ctx.get("job_try", 1))
             if isinstance(exc, TransientStageError) and attempt < retry_policy.MAX_STAGE_ATTEMPTS:
@@ -236,6 +245,25 @@ async def build_arq_pool(settings: Settings) -> ArqRedis:
     return await create_pool(build_redis_settings(settings))
 
 
+def _worker_queue_name_from_env() -> str:
+    """`arq`'s CLI (`arq app.analysis.worker.WorkerSettings`) has no `--queue`
+    flag - `queue_name` is read once from this class as a plain attribute,
+    the same constraint documented on `redis_settings` below. Left at its
+    default, every worker process started this way only ever watches
+    `default`, so the moment any analysis reaches `ocr` or `extracting`
+    (see `QUEUE_FOR_STAGE`) its next job sits enqueued forever with nothing
+    to dequeue it - found live wiring up a real end-to-end run: the
+    2026-09-04 manual verification worked around this by constructing
+    `arq.Worker(..., queue_name=...)` directly in a throwaway script instead
+    of the standard CLI entrypoint, which is not a repeatable deployment
+    story. `LABELLENS_WORKER_QUEUE` makes the same one process/one queue
+    real workers already need (per this module's own docstring - a
+    CPU-bound PaddleOCR pool and an I/O-bound Gemini pool want very
+    different concurrency) actually startable via `arq <module>.WorkerSettings`
+    alone, no bespoke script required."""
+    return os.environ.get("LABELLENS_WORKER_QUEUE", QUEUE_DEFAULT)
+
+
 def _worker_redis_settings_from_env() -> RedisSettings:
     """`LABELLENS_REDIS_URL` may be `memory://` (the API's in-memory session
     fallback, used by default in tests) - not a real redis DSN, and not
@@ -266,7 +294,7 @@ class WorkerSettings:
     # budget itself is measured in minutes, so sub-minute reaping precision
     # buys nothing.
     cron_jobs = (cron(reap_stalled_analyses_job, minute=set(range(60))),)
-    queue_name = QUEUE_DEFAULT
+    queue_name = _worker_queue_name_from_env()
     redis_settings = _worker_redis_settings_from_env()
     on_startup = _on_startup
     on_shutdown = _on_shutdown

@@ -1,0 +1,30 @@
+rule_key: IN-FSSAI-FOOD-INGREDIENTS-LIST-DECLARED
+version: 1
+title: "Ingredient list is declared"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 5(2): "Except for single ingredient foods, a list of
+  ingredients shall be declared on the label ... The list of ingredients
+  shall contain an appropriate title, such as the term 'Ingredients/List of
+  Ingredients'."
+severity: major
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  regex_matches:
+    path: ingredients.declared_text
+    pattern: "\\S"
+requires_fields:
+  - ingredients.declared_text
+on_missing_fields: insufficient_data
+message:
+  pass: "An ingredient list is declared on the label."
+  fail: "The ingredient list declaration is blank."
+  insufficient_data: "Could not determine whether an ingredient list is declared."
+evidence:
+  fields:
+    - ingredients.declared_text

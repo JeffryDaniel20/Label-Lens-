@@ -1,0 +1,25 @@
+# Documentation copy only - NOT loaded by any code path.
+#
+# The live, single source of truth for allergen recognition is
+# `app.extraction.normalize.allergens.ALLERGEN_SYNONYMS` (and
+# `CANONICAL_ALLERGENS`), which `IN-FSSAI-FOOD-ALLERGEN-NAMES-RECOGNIZED`
+# (rules/03_allergen_names_recognized.yaml) is evaluated against via the
+# `in_allergen_dictionary` predicate. This file exists only so a reviewer
+# reading this pack's directory (per IMPLEMENTATION.md section 10's
+# documented `dictionaries/*.yaml` layout) can see which allergens the pack
+# checks against without having to open Python source - duplicating the
+# dictionary's actual values here as loadable rule content would be exactly
+# the "two lists that can silently drift apart" hazard
+# `app.rules.predicates`'s own docstring warns against, so this file is
+# deliberately inert.
+#
+# Recognized categories (Food Safety and Standards (Labelling and Display)
+# Regulations, 2020, Regulation 5(14)):
+#   - cereals containing gluten (wheat, rye, barley, oats, spelt)
+#   - crustaceans
+#   - milk
+#   - eggs
+#   - fish
+#   - peanuts and tree nuts
+#   - soybeans
+#   - sulphites (>= 10 mg/kg)

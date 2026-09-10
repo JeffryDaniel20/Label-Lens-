@@ -78,6 +78,11 @@ class TestSignupAndLogin:
         assert me["email"] == "owner@acmefoods.com"
         assert me["role"] == "owner"
         assert "member:manage" in me["capabilities"]
+        # A page reload has only the session cookie, not the CSRF token
+        # `signup`/`login` returned in their own response body - `/v1/me`
+        # must hand it back so a reloaded session can still make mutating
+        # requests without re-authenticating.
+        assert me["csrf_token"] == body["csrf_token"]
 
     def test_duplicate_email_conflicts(self, client) -> None:
         client.post("/v1/auth/signup", json=SIGNUP)

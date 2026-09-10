@@ -1,0 +1,41 @@
+rule_key: IN-FSSAI-FOOD-INGREDIENTS-ITEMS-ITEMIZED
+version: 1
+title: "Ingredient list is broken into individually identifiable ingredients"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 5(2)(b): "The name of ingredients used in the product shall be
+  listed in descending order of their composition by weight or volume, as
+  the case may be, at the time of its manufacture." This rule checks only
+  that the declared list was successfully broken into individually
+  identifiable ingredients (a prerequisite for a descending-order
+  declaration to even be meaningful) - it does not verify the declared
+  order itself, since `LabelFacts` does not carry per-ingredient composition
+  weights the evaluator could compare. Note: given only `field_present` is
+  available to check a list-shaped fact, this rule's "fail" outcome is not
+  currently reachable in practice (a value that resolves at all is always a
+  non-empty, schema-valid list) - it can only ever resolve to `pass` or
+  `insufficient_data`; this is stated plainly rather than papered over with a
+  fabricated fail fixture. Evidence cites `ingredients.declared_text`, not
+  `ingredients.items`: the itemized list is a pure normalization derivative
+  (`app.extraction.normalize.ingredients`) with no `ExtractedField`/
+  `EvidenceSpan` row of its own - the real OCR citation this itemization was
+  computed from is `ingredients.declared_text`'s.
+severity: minor
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  field_present: ingredients.items
+requires_fields:
+  - ingredients.items
+on_missing_fields: insufficient_data
+message:
+  pass: "The ingredient list was itemized into individually identifiable ingredients."
+  fail: "The ingredient list could not be broken into individual ingredients."
+  insufficient_data: "Could not determine whether the ingredient list was itemized."
+evidence:
+  fields:
+    - ingredients.declared_text

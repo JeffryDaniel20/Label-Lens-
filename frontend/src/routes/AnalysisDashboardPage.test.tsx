@@ -1,0 +1,252 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { AnalysisDashboardPage } from "@/routes/AnalysisDashboardPage";
+import { ToastProvider } from "@/lib/toast";
+
+const {
+  useProductMock,
+  useProductVersionMock,
+  useAnalysisMock,
+  useAnalysisEventsMock,
+  useFindingsMock,
+  useReportsMock,
+  useGenerateReportMock,
+  useAnalysisSseMock,
+  useSessionMock,
+} = vi.hoisted(() => ({
+  useProductMock: vi.fn(),
+  useProductVersionMock: vi.fn(),
+  useAnalysisMock: vi.fn(),
+  useAnalysisEventsMock: vi.fn(),
+  useFindingsMock: vi.fn(),
+  useReportsMock: vi.fn(),
+  useGenerateReportMock: vi.fn(),
+  useAnalysisSseMock: vi.fn(),
+  useSessionMock: vi.fn(),
+}));
+vi.mock("@/features/catalog/products", () => ({ useProduct: useProductMock }));
+vi.mock("@/features/catalog/versions", () => ({ useProductVersion: useProductVersionMock }));
+vi.mock("@/features/analysis/analysis", () => ({
+  useAnalysis: useAnalysisMock,
+  useAnalysisEvents: useAnalysisEventsMock,
+  useFindings: useFindingsMock,
+  useReports: useReportsMock,
+  useGenerateReport: useGenerateReportMock,
+}));
+vi.mock("@/features/analysis/useAnalysisSse", () => ({ useAnalysisSse: useAnalysisSseMock }));
+vi.mock("@/features/auth/session", () => ({ useSession: useSessionMock }));
+
+function renderPage() {
+  const client = new QueryClient();
+  return render(
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/products/p1/versions/v1/analyses/a1"]}>
+          <Routes>
+            <Route
+              path="/products/:productId/versions/:versionId/analyses/:analysisId"
+              element={<AnalysisDashboardPage />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+}
+
+const RUNNING_ANALYSIS = {
+  id: "a1",
+  product_version_id: "v1",
+  state: "ocr" as const,
+  confidence_tier: null,
+  failure_stage: null,
+  retryable: null,
+  started_at: "2026-01-01T00:00:00Z",
+  finished_at: null,
+  progress_percentage: 33,
+  total_tokens_in: 0,
+  total_tokens_out: 0,
+  total_cost_cents: 0,
+};
+
+describe("AnalysisDashboardPage", () => {
+  beforeEach(() => {
+    useProductMock.mockReturnValue({ data: { id: "p1", name: "Masala Chips" } });
+    useProductVersionMock.mockReturnValue({ data: { id: "v1", version_no: 1 } });
+    useAnalysisEventsMock.mockReturnValue({ data: [] });
+    useFindingsMock.mockReturnValue({ data: [] });
+    useReportsMock.mockReturnValue({ data: [] });
+    useGenerateReportMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    useAnalysisSseMock.mockReturnValue({ connected: true });
+    useSessionMock.mockReturnValue({
+      data: { capabilities: ["analysis:view", "report:generate"] },
+    });
+  });
+
+  it("shows the current state, progress, and a live indicator while running", () => {
+    useAnalysisMock.mockReturnValue({ data: RUNNING_ANALYSIS, isPending: false, error: null });
+
+    renderPage();
+
+    expect(screen.getByText("Reading label (OCR)")).toBeInTheDocument();
+    expect(screen.getByText("33% complete")).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("hides the live indicator once the analysis has stopped", () => {
+    useAnalysisMock.mockReturnValue({
+      data: {
+        ...RUNNING_ANALYSIS,
+        state: "completed",
+        progress_percentage: 100,
+        confidence_tier: "high",
+      },
+      isPending: false,
+      error: null,
+    });
+
+    renderPage();
+
+    expect(screen.getByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("high confidence")).toBeInTheDocument();
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
+  });
+
+  it("shows the failure stage and the last event's reason for a failed analysis", () => {
+    useAnalysisMock.mockReturnValue({
+      data: {
+        ...RUNNING_ANALYSIS,
+        state: "failed",
+        failure_stage: "extracting",
+        retryable: true,
+        progress_percentage: 44,
+      },
+      isPending: false,
+      error: null,
+    });
+    useAnalysisEventsMock.mockReturnValue({
+      data: [
+        {
+          sequence: 1,
+          from_state: null,
+          to_state: "queued",
+          occurred_at: "2026-01-01T00:00:00Z",
+          reason: null,
+        },
+        {
+          sequence: 2,
+          from_state: "extracting",
+          to_state: "failed",
+          occurred_at: "2026-01-01T00:01:00Z",
+          reason: "Gemini call failed: 503 UNAVAILABLE.",
+        },
+      ],
+    });
+
+    renderPage();
+
+    const banner = screen.getByText(/Analysis failed at "extracting"/).closest("div")!;
+    expect(within(banner).getByText("Gemini call failed: 503 UNAVAILABLE.")).toBeInTheDocument();
+    expect(within(banner).getByText(/retried automatically/)).toBeInTheDocument();
+    expect(screen.getAllByText("Gemini call failed: 503 UNAVAILABLE.")).toHaveLength(2);
+  });
+
+  it("renders the real (possibly empty) findings list without fabricating anything", () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useFindingsMock.mockReturnValue({ data: [] });
+
+    renderPage();
+
+    expect(
+      screen.getByText("No compliance findings are available for this analysis."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders real findings when present", () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useFindingsMock.mockReturnValue({
+      data: [
+        {
+          id: "f1",
+          analysis_id: "a1",
+          rule_key: "IN.FSSAI.NET_QUANTITY",
+          rule_version: 1,
+          status: "fail",
+          severity: "major",
+          message: "Net quantity not declared.",
+          details: {},
+          confidence: 0.9,
+          evidence_refs: [],
+        },
+      ],
+    });
+
+    renderPage();
+
+    expect(screen.getByText("IN.FSSAI.NET_QUANTITY")).toBeInTheDocument();
+    expect(screen.getByText("major")).toBeInTheDocument();
+    expect(screen.getByText("fail")).toBeInTheDocument();
+  });
+
+  it("generates an extraction report and shows the resulting field table", async () => {
+    const mutate = vi.fn();
+    useGenerateReportMock.mockReturnValue({ mutate, isPending: false });
+    useAnalysisMock.mockReturnValue({
+      data: {
+        ...RUNNING_ANALYSIS,
+        state: "completed",
+        confidence_tier: "high",
+        progress_percentage: 100,
+      },
+      isPending: false,
+      error: null,
+    });
+    useReportsMock.mockReturnValue({
+      data: [
+        {
+          id: "r1",
+          analysis_id: "a1",
+          kind: "json",
+          generated_at: "2026-01-01T00:05:00Z",
+          sha256: "abc",
+          pdf_key: null,
+          pdf_download_url: null,
+          pdf_download_expires_in: null,
+          snapshot: {
+            appendix: {
+              extracted_fields: [
+                {
+                  field_path: "quantity.net_quantity",
+                  value_raw: "250 g",
+                  value_norm: { value: 250, unit: "g" },
+                  confidence: 0.95,
+                  verified: true,
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+
+    expect(screen.getByText("quantity.net_quantity")).toBeInTheDocument();
+    expect(screen.getByText("95%")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Regenerate extraction report" }));
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+});

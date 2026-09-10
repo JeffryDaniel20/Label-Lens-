@@ -5,11 +5,11 @@ cited, demoting anything that doesn't match closely enough.
 IMPLEMENTATION.md's own acceptance criterion - "hallucinated fields cannot
 satisfy a rule" - is made structurally true here, not merely checked: a
 demoted field's corresponding `LabelFacts` entry is rewritten to an explicit
-`Fact.missing(...)` *before* extraction ever returns, so there is no code
-path by which `rule_eval` (or anything else downstream) could ever read a
-value that failed this check. The rule engine does not need to know this
-gate exists - matching the "AI extracts, rules decide" principle by
-construction, not by convention.
+`Fact.missing(...)` *before* the calling stage's own transition commits, so
+there is no code path by which `rule_eval` (or anything else downstream)
+could ever read a value that failed this check. The rule engine does not
+need to know this gate exists - matching the "AI extracts, rules decide"
+principle by construction, not by convention.
 
 MATCHING ALGORITHM
 -------------------
@@ -37,6 +37,15 @@ inside an otherwise-real list demotes the whole list rather than just that
 item. Per-item verification would need per-item `ExtractedField` rows - a
 real, larger redesign of P3-T5's own persistence granularity, not attempted
 here.
+
+ORCHESTRATION
+-------------
+This module is pure verification logic with no opinion about when it runs -
+`app.analysis.stages._evidence_verification` is the actual orchestrator
+stage that calls `verify_extraction`, positioned as its own state between
+`extracting` and `normalizing` (P3-T6, wired as a real pipeline stage rather
+than a side effect of extraction itself). `extract_for_analysis` no longer
+calls this module at all.
 """
 
 from __future__ import annotations
@@ -92,6 +101,20 @@ def partial_ratio(value: str, cited_text: str) -> float:
 class VerificationSummary:
     verified_count: int
     demoted_count: int
+
+
+def _spans_multiple_pages(tokens: list[OcrTokenRow]) -> bool:
+    """A field's citations are expected to come from one contiguous location
+    on one page (`EvidenceSpan` itself only ever models a single page - see
+    `verify_extraction`'s own comment on why the first token's page is used
+    as *the* span's page). Citations resolving to more than one distinct
+    `file_page_id` is exactly the kind of contradiction a hallucinating or
+    confused model can produce (real evidence for one printed field does not
+    legitimately span two separate label pages), so it is treated as an
+    invalid citation - the same fail-safe outcome as no citation at all -
+    rather than arbitrarily picking one page and silently discarding the
+    other tokens' contribution to the match."""
+    return len({t.file_page_id for t in tokens}) > 1
 
 
 def _bbox_union(tokens: list[OcrTokenRow]) -> tuple[float, float, float, float]:
@@ -215,6 +238,17 @@ def verify_extraction(
             label_facts = _demote(label_facts, field.field_path)
             continue
 
+        if _spans_multiple_pages(tokens):
+            # A contradictory citation, not merely a missing one - real
+            # evidence for one field does not legitimately span two pages.
+            # Fails exactly the same way as no citation: never partial
+            # credit for the tokens that happen to be on one page.
+            field.verified = False
+            field.match_ratio = 0.0
+            demoted_count += 1
+            label_facts = _demote(label_facts, field.field_path)
+            continue
+
         cited_text = " ".join(t.text for t in tokens)
         ratio = partial_ratio(field.value_raw, cited_text)
         field.match_ratio = ratio
@@ -231,9 +265,9 @@ def verify_extraction(
             EvidenceSpan(
                 organization_id=field.organization_id,
                 extracted_field_id=field.id,
-                # Citations for one field are expected to come from one
-                # page in practice; the first token's page is used as the
-                # span's page rather than modelling a cross-page span.
+                # A cross-page citation was already rejected above, so every
+                # remaining token here shares one `file_page_id` - safe to
+                # take the first rather than modelling a cross-page span.
                 file_page_id=tokens[0].file_page_id,
                 token_ids=list(field.cited_token_ids),
                 x1=x1,

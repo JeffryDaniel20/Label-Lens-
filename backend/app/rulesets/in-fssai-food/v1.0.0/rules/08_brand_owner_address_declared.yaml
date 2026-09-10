@@ -1,0 +1,34 @@
+rule_key: IN-FSSAI-FOOD-BRAND-OWNER-ADDRESS-DECLARED
+version: 1
+title: "Name and address of the brand owner, manufacturer, packer, or marketer is declared"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 5(6)(a): "The name and complete address of the brand owner,
+  whether or not, he himself is the manufacturer, marketer, packer or
+  bottler, as the case may be, shall be declared on the label. Such name and
+  address shall be preceded by the qualifying words 'Manufactured by (Mfg
+  by, Mfd by)' or 'Marketed by (Mkt by)' or 'Manufactured & Marketed by' or
+  'Packed & Marketed by' as the case may be." Note: given only
+  `field_present` is available to check a list-shaped fact, this rule's
+  "fail" outcome is not currently reachable in practice - it can only ever
+  resolve to `pass` or `insufficient_data`; this is stated plainly rather
+  than papered over with a fabricated fail fixture.
+severity: major
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  field_present: addresses.items
+requires_fields:
+  - addresses.items
+on_missing_fields: insufficient_data
+message:
+  pass: "A brand owner, manufacturer, packer, or marketer name and address is declared on the label."
+  fail: "No brand owner, manufacturer, packer, or marketer address was found on the label."
+  insufficient_data: "Could not determine whether a brand owner or manufacturer address is declared."
+evidence:
+  fields:
+    - addresses.items

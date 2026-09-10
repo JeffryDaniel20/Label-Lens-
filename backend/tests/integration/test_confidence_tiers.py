@@ -55,6 +55,17 @@ def rig(db):
         product_version_id=version.id,
         state=AnalysisState.SCORING,
         idempotency_key=uuid.uuid4().hex,
+        # A confidently-*resolved* classification by default (both signals
+        # at their ceiling) - these tests are about field/OCR/extraction
+        # confidence, not classification, so the fixture simulates
+        # `_classifying` having already succeeded with full confidence
+        # rather than leaving `category=None` (an abstention, which would
+        # force every one of these tests to Low regardless of their own
+        # fields - see `TestClassificationSignal` for that dimension).
+        category="packaged_food",
+        jurisdictions=["IN"],
+        category_confidence=1.0,
+        jurisdiction_confidence=1.0,
     )
     db.add(analysis)
     db.flush()
@@ -127,7 +138,7 @@ class TestComputeAnalysisTier:
             confidence=0.95, verified=True, cited_token_ids=[tok],
         )
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.tier is ConfidenceTier.HIGH
         assert result.fields[0].confidence == pytest.approx(0.95)
@@ -145,7 +156,7 @@ class TestComputeAnalysisTier:
             confidence=0.8, verified=True, cited_token_ids=[medium_tok],
         )
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.tier is ConfidenceTier.MEDIUM
 
@@ -165,7 +176,7 @@ class TestComputeAnalysisTier:
             confidence=0.0, verified=None,
         )
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.tier is ConfidenceTier.LOW
         missing = next(f for f in result.fields if f.field_path == "dates.batch_number")
@@ -185,7 +196,7 @@ class TestComputeAnalysisTier:
             confidence=0.99, verified=False,
         )
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.tier is ConfidenceTier.LOW
         demoted = next(f for f in result.fields if f.field_path == "dates.batch_number")
@@ -200,7 +211,7 @@ class TestComputeAnalysisTier:
             confidence=0.99, verified=True, cited_token_ids=[strong, weak],
         )
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.fields[0].confidence == pytest.approx(0.5)
         assert result.tier is ConfidenceTier.LOW
@@ -208,10 +219,128 @@ class TestComputeAnalysisTier:
     def test_no_extracted_fields_at_all_is_low(self, db, rig) -> None:
         _org, _page, _analysis, extraction = rig
 
-        result = compute_analysis_tier(db, extraction=extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=_analysis)
 
         assert result.tier is ConfidenceTier.LOW
         assert result.fields[0].reason == "no fields were extracted"
+
+
+class TestClassificationSignalAffectsTier:
+    """P3-T8's own objective, taken literally: classification (P3-T9) is a
+    third real signal in the final tier, not just OCR/extraction - an
+    abstained or weakly-resolved classification must degrade the analysis
+    tier exactly like a missing/demoted field does, and never be silently
+    ignored just because it lives on `Analysis` rather than
+    `ExtractedField`."""
+
+    def test_an_abstained_classification_forces_low_even_with_perfect_fields(
+        self, db, rig
+    ) -> None:
+        org, page, analysis, extraction = rig
+        analysis.category = None
+        analysis.jurisdictions = []
+        analysis.category_confidence = 0.33
+        analysis.jurisdiction_confidence = 0.0
+        db.flush()
+        tok = _token(db, org, page, confidence=0.99)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.99, verified=True, cited_token_ids=[tok],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.LOW
+        category_result = next(
+            f for f in result.fields if f.field_path == "classification.category"
+        )
+        jurisdiction_result = next(
+            f for f in result.fields if f.field_path == "classification.jurisdiction"
+        )
+        assert category_result.tier is ConfidenceTier.LOW
+        assert category_result.confidence == pytest.approx(0.33)
+        assert "abstained" in category_result.reason
+        assert jurisdiction_result.tier is ConfidenceTier.LOW
+        assert "abstained" in jurisdiction_result.reason
+
+    def test_a_resolved_but_partial_confidence_classification_caps_at_medium(
+        self, db, rig
+    ) -> None:
+        """A real, non-abstained classification (e.g. jurisdiction inferred
+        from an address keyword match rather than an exact declared market
+        code) is a weaker basis than a perfect one - it must not authorize
+        full auto-completion just because every field happens to read
+        perfectly."""
+        org, page, analysis, extraction = rig
+        analysis.category_confidence = 1.0
+        analysis.jurisdiction_confidence = 0.6  # a real, passing, but partial signal
+        db.flush()
+        tok = _token(db, org, page, confidence=0.99)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.99, verified=True, cited_token_ids=[tok],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.MEDIUM
+        jurisdiction_result = next(
+            f for f in result.fields if f.field_path == "classification.jurisdiction"
+        )
+        assert jurisdiction_result.tier is ConfidenceTier.MEDIUM
+        assert jurisdiction_result.reason is None  # not forced - a real, graded outcome
+
+    def test_full_confidence_classification_alongside_perfect_fields_allows_high(
+        self, db, rig
+    ) -> None:
+        """The positive case: nothing about combining a third signal makes
+        High unreachable when every signal genuinely earns it."""
+        org, page, analysis, extraction = rig
+        tok = _token(db, org, page, confidence=0.99)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.99, verified=True, cited_token_ids=[tok],
+        )
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.HIGH
+
+    def test_classification_confidence_boundary_at_the_high_ceiling(self, db, rig) -> None:
+        """Exactly 1.0 (every available classification signal agreed) is
+        the one value High-eligible; anything even marginally short of it
+        is a real but incomplete signal and caps at Medium - a deliberate,
+        documented boundary (see the module docstring), not the same
+        0.90/0.70 bands the per-field confidences use."""
+        org, page, analysis, extraction = rig
+        tok = _token(db, org, page, confidence=0.99)
+        _field(
+            db, org, extraction, field_path="quantity.net_quantity", value_raw="250 g",
+            confidence=0.99, verified=True, cited_token_ids=[tok],
+        )
+
+        analysis.category_confidence = 0.999
+        db.flush()
+        just_below = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+        assert just_below.tier is ConfidenceTier.MEDIUM
+
+        analysis.category_confidence = 1.0
+        db.flush()
+        at_ceiling = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+        assert at_ceiling.tier is ConfidenceTier.HIGH
+
+    def test_conflicting_signals_a_perfect_classification_cannot_rescue_a_bad_field(
+        self, db, rig
+    ) -> None:
+        """The reverse conflict: an excellent classification must not
+        dilute away a genuinely bad field, matching the same worst-tier-wins
+        rule already enforced among fields themselves."""
+        org, page, analysis, extraction = rig
+        _field(db, org, extraction, field_path="quantity.net_quantity", value_raw=None)
+
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+
+        assert result.tier is ConfidenceTier.LOW
 
 
 class TestScoringStage:

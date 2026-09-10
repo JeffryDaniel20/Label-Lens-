@@ -7,15 +7,16 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
+from app.analysis.models import Analysis, AnalysisState, DeadLetterJob
 from app.analysis.router import router as analysis_router
-from app.analysis.worker import build_arq_pool
+from app.analysis.worker import QUEUE_DEFAULT, QUEUE_LLM, QUEUE_OCR, build_arq_pool
 from app.catalog.router import router as catalog_router
 from app.db import models as _models  # noqa: F401  (registers metadata)
-from app.db.session import get_engine, init_engine
+from app.db.session import get_engine, get_session_factory, init_engine, set_tenant_context
 from app.findings.router import router as findings_router
 from app.identity.router import router as identity_router
 from app.identity.sessions import (
@@ -29,12 +30,14 @@ from app.ingestion.router import router as ingestion_router
 from app.platform.config import Settings, get_settings
 from app.platform.errors import install_error_handlers
 from app.platform.logging import configure_logging, get_logger
+from app.platform.metrics import ANALYSES_BY_STATE, DLQ_UNREPLAYED, QUEUE_DEPTH, render_metrics
 from app.platform.middleware import (
     BodySizeLimitMiddleware,
     CorrelationIdMiddleware,
     SecurityHeadersMiddleware,
 )
 from app.platform.ratelimit import MemoryCounterStore, RateLimiter, RedisCounterStore
+from app.platform.sentry import init_sentry
 from app.reports.router import router as reports_router
 from app.storage.client import build_storage_client
 from app.storage.router import router as storage_router
@@ -62,6 +65,49 @@ def readyz() -> dict[str, Any]:
         checks["database"] = f"error: {type(exc).__name__}"
     ready = all(v == "ok" for v in checks.values())
     return {"status": "ready" if ready else "degraded", "checks": checks}
+
+
+@health_router.get("/metrics", include_in_schema=False)
+async def metrics(request: Request) -> Response:
+    """Prometheus scrape target (P7-T5). No auth: this is standard practice
+    for Prometheus exporters (the scraper is inside the private network, not
+    a public consumer) and matches `/healthz`/`/readyz`'s own posture -
+    nothing here leaks label content or secrets, only counts and durations.
+
+    `ANALYSES_BY_STATE`/`DLQ_UNREPLAYED`/`QUEUE_DEPTH` are all set from a
+    live query right before rendering rather than incrementally maintained -
+    see `app.platform.metrics`'s own docstring for why a query can never
+    drift the way a hand-maintained running total could.
+    """
+    db = get_session_factory()()
+    try:
+        set_tenant_context(db, None)  # maintenance access - see app.analysis.janitor
+        # Every known state is zeroed first: a state with zero analyses in
+        # it right now must read as 0, not silently keep whatever value it
+        # last had before the count dropped to zero.
+        counts: dict[AnalysisState, int] = dict.fromkeys(AnalysisState, 0)
+        for state, count in db.execute(
+            select(Analysis.state, func.count()).group_by(Analysis.state)
+        ).all():
+            counts[state] = count
+        for state, count in counts.items():
+            ANALYSES_BY_STATE.labels(state=state.value).set(count)
+        unreplayed = db.scalar(
+            select(func.count())
+            .select_from(DeadLetterJob)
+            .where(DeadLetterJob.replayed_at.is_(None))
+        )
+        DLQ_UNREPLAYED.set(unreplayed or 0)
+    finally:
+        db.close()
+
+    pool: ArqRedis | None = request.app.state.arq_pool
+    for queue in (QUEUE_DEFAULT, QUEUE_OCR, QUEUE_LLM):
+        depth = await pool.zcard(queue) if pool is not None else 0
+        QUEUE_DEPTH.labels(queue=queue).set(depth)
+
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 def _build_stores(settings: Settings) -> tuple[SessionStore, Any]:
@@ -127,6 +173,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         level="DEBUG" if settings.debug else "INFO",
     )
     init_engine(settings.database_url, echo=False)
+    init_sentry(settings)
 
     app = FastAPI(
         title="LabelLens API",

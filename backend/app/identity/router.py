@@ -157,6 +157,7 @@ def me(
         role=principal.role,
         capabilities=capabilities_for(principal.role),
         memberships=memberships,
+        csrf_token=principal.session.csrf_token if principal.session else None,
     )
 
 

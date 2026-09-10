@@ -1,0 +1,27 @@
+# Observability overlay (P7-T5): `docker compose -f infra/docker-compose.yml
+# -f infra/docker-compose.observability.yml up`. Deliberately not part of
+# the base `docker-compose.yml`/`make up` - the objective's own scheduling
+# note says this work "can be done any time after P0-T2 and should not wait
+# for P7," which cuts both ways: it also shouldn't force Prometheus+Grafana
+# onto every local dev boot that has nothing to do with observability.
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    depends_on:
+      api: {condition: service_started}
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: labellens
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    depends_on: [prometheus]

@@ -1,0 +1,42 @@
+# Alert rules (P7-T5), IMPLEMENTATION.md section 20's three named alerts,
+# verbatim: "DLQ non-empty; queue depth > N for 10 min; analysis failure
+# rate > 5% / 15 min".
+groups:
+  - name: labellens
+    rules:
+      - alert: DeadLetterQueueNonEmpty
+        expr: labellens_dlq_unreplayed > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LabelLens has {{ $value }} unreplayed dead-letter job(s)"
+          description: >-
+            One or more analyses dead-lettered and have not been replayed.
+            See GET /v1/analyses/dead-letters and
+            docs/runbooks/provider-outage.md if the reason looks
+            provider-related.
+
+      - alert: AnalysisFailureRateHigh
+        expr: rate(labellens_analysis_failures_total[15m]) > 0.05
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LabelLens analysis failure rate is elevated"
+          description: >-
+            More than 5% of analyses have failed over the last 15 minutes
+            (rate={{ $value }}/s). Check labellens_analysis_failures_total
+            by stage to find which pipeline step is failing.
+
+      - alert: QueueDepthHigh
+        expr: labellens_queue_depth > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LabelLens queue {{ $labels.queue }} has been backed up for 10+ minutes"
+          description: >-
+            {{ $labels.queue }} queue depth is {{ $value }} and has stayed
+            above 50 for at least 10 minutes - workers may be under-scaled
+            or stalled.

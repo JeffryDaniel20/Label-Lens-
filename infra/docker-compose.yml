@@ -1,7 +1,50 @@
 # Local development stack. One command brings up everything the API needs.
 name: labellens
 
+# Shared by `api` and all three `worker-*` services below - a worker process
+# needs the exact same DB/storage/LLM configuration the API does (it runs
+# the same `app` code, just as an `arq` worker instead of `uvicorn`), so this
+# is defined once and merged in (`<<: *backend-env`) rather than repeated
+# four times and left to drift.
+x-backend-env: &backend-env
+  LABELLENS_ENVIRONMENT: local
+  LABELLENS_DEBUG: "true"
+  LABELLENS_SECRET_KEY: ${LABELLENS_SECRET_KEY:-local-development-secret-key-change-me}
+  LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
+  LABELLENS_REDIS_URL: redis://redis:6379/0
+  LABELLENS_COOKIE_SECURE: "false"
+  # `minio:9000` (the container-network hostname) is correct for every
+  # *server-side* call this stack itself makes (uploading, head/download,
+  # OCR page fetches) - but it also ends up baked into presigned URLs, which
+  # a browser outside the docker network cannot resolve. That's an inherent
+  # local-dev limitation of running MinIO fully containerized, not something
+  # this compose file can paper over: driving an upload through the browser
+  # against this stack needs a host-reachable endpoint (`localhost:9000`)
+  # configured instead, same as `frontend/playwright.config.ts` does for its
+  # own (non-containerized) backend process.
+  LABELLENS_STORAGE_ENDPOINT_URL: http://minio:9000
+  LABELLENS_STORAGE_BUCKET: labellens-uploads
+  LABELLENS_STORAGE_ACCESS_KEY: labellens
+  LABELLENS_STORAGE_SECRET_KEY: labellens-dev-secret
+  # Passed through from the host environment or infra/.env - never
+  # hard-coded here, since this file is committed.
+  LABELLENS_LLM_PROVIDER: ${LABELLENS_LLM_PROVIDER:-gemini}
+  LABELLENS_LLM_API_KEY: ${LABELLENS_LLM_API_KEY:-}
+  LABELLENS_LLM_MODEL: ${LABELLENS_LLM_MODEL:-gemini-3.8-flash}
+  LABELLENS_LLM_ESCALATION_MODEL: ${LABELLENS_LLM_ESCALATION_MODEL:-gemini-3.8-flash}
+
 services:
+  # A fresh named volume is root-owned; postgres's own entrypoint only
+  # chowns PGDATA itself, not other mounted volumes, so `archive_command`
+  # (running as the `postgres` user, uid 70 in this image - confirmed via
+  # `docker exec ... id postgres`) fails with "Permission denied" against
+  # `/wal_archive` until something chowns it first, the same way `minio-init`
+  # below does the one-time setup `minio` itself can't do for its own bucket.
+  postgres-wal-init:
+    image: alpine:3.20
+    volumes: ["wal_archive:/wal_archive"]
+    command: ["chown", "-R", "70:70", "/wal_archive"]
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -9,7 +52,19 @@ services:
       POSTGRES_PASSWORD: labellens
       POSTGRES_DB: labellens
     ports: ["5432:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    volumes: ["pgdata:/var/lib/postgresql/data", "wal_archive:/wal_archive"]
+    depends_on:
+      postgres-wal-init: {condition: service_completed_successfully}
+    # WAL archiving (P7-T6): continuous, not just the nightly pg_dump - this
+    # is what gets RPO down from "since last night's backup" to "since the
+    # last archived segment" (minutes, not hours). `archive_command`'s
+    # `test ! -f ... &&` guards against silently overwriting an
+    # already-archived segment, matching Postgres's own documented pattern.
+    command: >
+      postgres
+      -c archive_mode=on
+      -c wal_level=replica
+      -c archive_command='test ! -f /wal_archive/%f && cp %p /wal_archive/%f'
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U labellens"]
       interval: 5s
@@ -57,24 +112,65 @@ services:
       /bin/sh -c "alembic upgrade head &&
       uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --reload"
     environment:
-      LABELLENS_ENVIRONMENT: local
-      LABELLENS_DEBUG: "true"
-      LABELLENS_SECRET_KEY: ${LABELLENS_SECRET_KEY:-local-development-secret-key-change-me}
-      LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
-      LABELLENS_REDIS_URL: redis://redis:6379/0
-      LABELLENS_COOKIE_SECURE: "false"
-      # Passed through from the host environment or infra/.env - never
-      # hard-coded here, since this file is committed.
-      LABELLENS_LLM_PROVIDER: ${LABELLENS_LLM_PROVIDER:-gemini}
-      LABELLENS_LLM_API_KEY: ${LABELLENS_LLM_API_KEY:-}
-      LABELLENS_LLM_MODEL: ${LABELLENS_LLM_MODEL:-gemini-3.8-flash}
-      LABELLENS_LLM_ESCALATION_MODEL: ${LABELLENS_LLM_ESCALATION_MODEL:-gemini-3.8-flash}
+      <<: *backend-env
     volumes: ["../backend:/srv"]
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+
+  # Nothing consumes a queued analysis without these: `submit_analysis`
+  # enqueues onto `default`, and `run_analysis_stage` re-enqueues onto `ocr`/
+  # `llm` per `app/analysis/worker.py::QUEUE_FOR_STAGE` - a real deployment
+  # needs all three watched, sized independently (a CPU-bound PaddleOCR pool
+  # and an I/O-bound Gemini pool have very different concurrency needs).
+  # `arq`'s own CLI has no `--queue` flag, so each service below only differs
+  # in `LABELLENS_WORKER_QUEUE`, which `_worker_queue_name_from_env` reads at
+  # import time - found live missing entirely: without it, every worker
+  # process only ever watched `default`, so any analysis reaching `ocr` or
+  # `extracting` stalled forever with its next job sitting enqueued with
+  # nothing to dequeue it.
+  worker-default:
+    build:
+      context: ../backend
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: default
+    volumes: ["../backend:/srv"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+
+  worker-ocr:
+    build:
+      context: ../backend
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: ocr
+    volumes: ["../backend:/srv"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+
+  worker-llm:
+    build:
+      context: ../backend
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: llm
+    volumes: ["../backend:/srv"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
 
 volumes:
   pgdata:
   miniodata:
+  wal_archive:

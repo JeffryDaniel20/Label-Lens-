@@ -1,0 +1,37 @@
+# in-fssai-food v1.0.0 (P4-T5, D-01 resolved to India/FSSAI per explicit user
+# instruction, 2026-09-10)
+#
+# Source of truth for every rule in rules/*.yaml: the Food Safety and
+# Standards (Labelling and Display) Regulations, 2020 - the regulation
+# actually in force for pre-packaged food labelling in India today (it
+# superseded the FSS (Packaging and Labelling) Regulations, 2011 for
+# labelling content; FBO compliance deadline extended to 1 July 2022). Text
+# was fetched directly from FSSAI's own published compendium PDF (Version
+# VIII, 09.09.2025) - not paraphrased from a secondary summary - and every
+# rule's citation quotes the exact regulation/sub-regulation number that PDF
+# uses.
+#
+# Scope is deliberately narrower than IMPLEMENTATION.md's "25-40 rules"
+# target for this first pack. `app.extraction.facts.LabelFacts` (P3-T4, a
+# frozen, already-relied-upon contract) does not currently capture several
+# other FSSAI-mandated declarations - name of food, FSSAI logo/licence
+# number, veg/non-veg symbol, country of origin, food-additive INS numbers,
+# per-nutrient RDA percentages, instructions for use - so rules for those
+# cannot be written today without either fabricating checks against data
+# that was never extracted, or extending the extraction schema (a separate,
+# much larger change rippling through OCR/extraction/normalization/
+# evidence-verification/confidence-tiers, all already built and tested this
+# session). Every rule below instead checks something `LabelFacts` genuinely
+# captures, using only predicates already in `app.rules.predicates`' closed
+# registry (P4-T2) - no new predicate was added for this pack.
+pack_id: in-fssai-food
+jurisdiction: IN
+category: packaged_food
+version: 1.0.0
+effective_from: 2022-07-01
+effective_to: null
+source_citations:
+  - "Food Safety and Standards (Labelling and Display) Regulations, 2020 (as amended), official FSSAI compendium Version VIII (09.09.2025): https://fssai.gov.in/upload/uploadfiles/files/Comp_Labelling%20Display_Version%20VIII_09_09_2025.pdf"
+  - "FSSAI compliance-date direction F.No.REG/L&D-Extension/FSSAI-2021 dated 22 October 2021 (extending Chapter 3 compliance to 1 July 2022)"
+author: "LabelLens regulatory content, prepared 2026-09-10 from primary-source FSSAI text (not fabricated; see source_citations)"
+review_date: 2026-09-10

@@ -51,6 +51,10 @@ class AnalysisState(enum.StrEnum):
     PREPROCESSING = "preprocessing"
     OCR = "ocr"
     EXTRACTING = "extracting"
+    # Kept to 18 chars deliberately - `enum_column`'s default `VARCHAR(20)`
+    # (see `app.db.base.enum_column`) would silently need widening for
+    # anything longer, and this fits without one.
+    EVIDENCE_VERIFICATION = "verifying_evidence"
     NORMALIZING = "normalizing"
     CLASSIFYING = "classifying"
     RULE_EVAL = "rule_eval"

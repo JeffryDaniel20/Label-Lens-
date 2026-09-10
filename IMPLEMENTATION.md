@@ -424,13 +424,21 @@ States: `pending → in_review → changes_requested? → signed_off` (or `escal
 ## 14. Analysis State Machine
 
 ```
-queued → validating → preprocessing → ocr → extracting → normalizing
-       → classifying → rule_eval → scoring → (needs_review | completed)
-                                                    ↓
-                                             review → completed
+queued → validating → preprocessing → ocr → extracting → verifying_evidence
+       → normalizing → classifying → rule_eval → scoring → (needs_review | completed)
+                                                                   ↓
+                                                            review → completed
 any → failed (terminal, with failure_stage + retryable flag)
 any → cancelled
 ```
+
+`verifying_evidence` (P3-T6) is its own mandatory checkpoint between `extracting` and
+`normalizing`, not a side effect folded into `extracting` itself — every extracted field's cited
+OCR tokens are deterministically checked there (fuzzy text match, cross-page contradiction check),
+and anything that fails is demoted to an explicit absence before any later stage can read it. Kept
+as its own state (not merged back into `extracting`) so a crash/retry there never re-burns LLM
+tokens re-extracting something that already committed, and so no future wiring change can route
+around it silently.
 
 - Each transition writes an `analysis_events` row (state, timestamp, correlation id, worker id).
 - **Idempotency:** enqueue key = `sha256(product_version_id + file_set_hash + ruleset_version +

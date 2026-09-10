@@ -30,9 +30,10 @@ every other table in this codebase so far.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.platform.errors import Conflict, NotFound
@@ -91,6 +92,40 @@ def publish_pack(db: Session, pack: RulePack) -> Ruleset:
         )
     db.flush()
     return ruleset
+
+
+def find_active_ruleset(
+    db: Session, *, jurisdiction: str, category: str, as_of: dt.date
+) -> Ruleset | None:
+    """The one published ruleset (if any) in effect for `jurisdiction`/
+    `category` as of `as_of` - the resolution step `app.analysis.stages.
+    _rule_eval` needs before it can even attempt `load_ruleset()`.
+
+    Returns `None`, not an error, the moment nothing has been published yet
+    for that jurisdiction/category - true for every jurisdiction in this
+    repository today, since D-01 (first jurisdiction) remains undecided and
+    P4-T5 (real rule content) untouched. An absent ruleset is a fact about
+    the world this function reports honestly, not a bug to raise on -
+    `_rule_eval` treats it exactly like its own placeholder predecessor did:
+    an honest no-op, never a fabricated finding.
+
+    If more than one version's effective window somehow covers `as_of`
+    (should not happen given `publish_pack`'s own `(jurisdiction, category,
+    version)` uniqueness constraint, but effective windows for two
+    different versions could in principle still overlap), the most
+    recently *published* one wins - deterministic, not "first found."
+    """
+    return db.scalar(
+        select(Ruleset)
+        .where(
+            Ruleset.jurisdiction == jurisdiction,
+            Ruleset.category == category,
+            Ruleset.effective_from <= as_of,
+            or_(Ruleset.effective_to.is_(None), Ruleset.effective_to >= as_of),
+        )
+        .order_by(Ruleset.published_at.desc())
+        .limit(1)
+    )
 
 
 def load_ruleset(db: Session, ruleset_id: uuid.UUID) -> tuple[Ruleset, list[Rule]]:

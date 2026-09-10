@@ -8,12 +8,14 @@ provider spend lands on the analysis via P5-T5's cost accounting.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from app.analysis import service as analysis_service
 from app.analysis.models import AnalysisState
 from app.analysis.retry_policy import PermanentStageError, TransientStageError
 from app.analysis.stages import STAGE_FUNCTIONS, advance_analysis
 from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
+from app.extraction import facts as facts_schema
 from app.extraction.llm import ProviderError, ProviderNotConfigured
 from app.extraction.llm.base import ProviderResponse, ProviderUsage
 from app.platform.config import Settings
@@ -138,7 +140,10 @@ class TestExtractingStage:
         new_state = advance_analysis(db, analysis)
         db.commit()
 
-        assert new_state is AnalysisState.NORMALIZING
+        # P3-T6: evidence verification is its own stage now, immediately
+        # after extraction and before normalizing - not folded into this
+        # one, so a successful extraction lands here, not `normalizing`.
+        assert new_state is AnalysisState.EVIDENCE_VERIFICATION
         assert analysis.total_tokens_in == 120
         assert analysis.total_tokens_out == 80
 
@@ -202,3 +207,93 @@ class TestExtractingStage:
         from app.analysis.stages import _placeholder
 
         assert STAGE_FUNCTIONS[AnalysisState.EXTRACTING] is not _placeholder
+
+
+class TestEvidenceVerificationStageThroughTheRealPipeline:
+    """P3-T6, exercised through the real orchestrator - `advance_analysis`
+    twice, not the verification logic called directly - proving the stage
+    is actually wired between `extracting` and `normalizing`, not just that
+    `app.extraction.evidence.verify_extraction` works in isolation (see
+    `tests/unit/test_extraction_evidence.py` and
+    `tests/integration/test_extraction_verification.py` for that).
+
+    `analysis_at_extracting`'s own fixture has exactly 2 real OCR tokens
+    (`"Wheat flour"` index 0, `"250 g"` index 1) - `VALID_JSON` (P3-T5's own
+    shared fixture) cites index 1 for `quantity_net_quantity` (a real,
+    matching citation) and index 2 for `allergens_declaration_text`, which
+    does not exist in this 2-token fixture - a naturally-occurring forged/
+    out-of-range citation, not a hand-crafted adversarial case, giving one
+    verified and one demoted field from the exact same real run.
+    """
+
+    def test_verification_runs_as_its_own_stage_after_extraction(
+        self, db, analysis_at_extracting, monkeypatch
+    ) -> None:
+        from app.extraction.models import EvidenceSpan, ExtractedField, Extraction
+
+        org, analysis = analysis_at_extracting
+        _configure(monkeypatch, _StubProvider())
+
+        extracting_result = advance_analysis(db, analysis)
+        db.commit()
+        assert extracting_result is AnalysisState.EVIDENCE_VERIFICATION
+
+        extraction = db.scalar(select(Extraction).where(Extraction.analysis_id == analysis.id))
+        quantity_field = db.scalar(
+            select(ExtractedField).where(
+                ExtractedField.extraction_id == extraction.id,
+                ExtractedField.field_path == "quantity.net_quantity",
+            )
+        )
+        # Not yet verified: `_extracting` alone no longer runs the gate.
+        assert quantity_field.verified is None
+        assert extraction.verified_field_count == 0
+        assert extraction.demoted_field_count == 0
+
+        verification_result = advance_analysis(db, analysis)
+        db.commit()
+        assert verification_result is AnalysisState.NORMALIZING
+
+        db.refresh(extraction)
+        db.refresh(quantity_field)
+        assert quantity_field.verified is True
+        # `VALID_JSON` (P3-T5's own shared fixture) carries 5 fields with a
+        # real value; only `quantity_net_quantity` cites a token that both
+        # exists in this 2-token fixture AND textually matches - every other
+        # populated field cites either an out-of-range index (demoted, no
+        # citation resolves) or a real index whose text doesn't match
+        # closely enough, so the other 4 are demoted too. Real, not
+        # hand-tuned to make exactly one thing fail.
+        assert extraction.verified_field_count == 1
+        assert extraction.demoted_field_count == 4
+
+        allergens_field = db.scalar(
+            select(ExtractedField).where(
+                ExtractedField.extraction_id == extraction.id,
+                ExtractedField.field_path == "allergens.declaration_text",
+            )
+        )
+        assert allergens_field.verified is False
+
+        span = db.scalar(
+            select(EvidenceSpan).where(EvidenceSpan.extracted_field_id == quantity_field.id)
+        )
+        assert span is not None
+        assert span.text_snippet == "250 g"
+        no_span = db.scalar(
+            select(EvidenceSpan).where(EvidenceSpan.extracted_field_id == allergens_field.id)
+        )
+        assert no_span is None
+
+        facts = facts_schema.LabelFacts.model_validate(extraction.payload)
+        assert facts.quantity.net_quantity.value == "250 g"
+        assert facts.allergens.declaration_text.value is None
+
+    def test_a_missing_extraction_is_a_permanent_failure(self, db, analysis_at_extracting) -> None:
+        from app.analysis.stages import _evidence_verification
+
+        _org, analysis = analysis_at_extracting
+        analysis.state = AnalysisState.EVIDENCE_VERIFICATION
+        db.flush()
+        with pytest.raises(PermanentStageError, match="No extraction exists"):
+            _evidence_verification(db, analysis)

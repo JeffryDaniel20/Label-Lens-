@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.platform.logging import correlation_id_var, get_logger
+from app.platform.sentry import capture_exception
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
 _log = get_logger(__name__)
@@ -159,6 +160,7 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception) -> JSONResponse:
         _log.error("unhandled_exception", exc_info=exc)
+        capture_exception(exc)
         return problem_response(
             status=500,
             error_type="internal_error",

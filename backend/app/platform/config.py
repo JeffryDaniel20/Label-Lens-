@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # the same label should not yield different facts run to run.
     llm_temperature: float = 0.0
 
+    # --- observability (P7-T5) ---------------------------------------------
+    # Empty means Sentry is disabled - local/test runs never send anything
+    # anywhere by default, matching every other optional external dependency
+    # in this codebase (clamd_host, storage_endpoint_url, ...).
+    sentry_dsn: str = ""
+
     @field_validator("secret_key")
     @classmethod
     def _reject_placeholder_secret(cls, value: str) -> str:

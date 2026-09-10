@@ -1,0 +1,35 @@
+rule_key: IN-FSSAI-FOOD-LABEL-LANGUAGE-COMPLIANT
+version: 1
+title: "Label particulars are in English or Hindi"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 4(5): "The particulars of declaration required under these
+  Regulations to be specified on the label shall be in English or Hindi in
+  Devnagri script: Provided that nothing herein contained shall prevent the
+  use of any other language in addition to the language required under this
+  regulation."
+severity: major
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  any:
+    - language_present:
+        path: languages.detected
+        language: en
+    - language_present:
+        path: languages.detected
+        language: hi
+requires_fields:
+  - languages.detected
+on_missing_fields: insufficient_data
+message:
+  pass: "The label's declared particulars are in English or Hindi."
+  fail: "No English or Hindi text was detected among the label's declared particulars."
+  insufficient_data: "Could not determine which languages appear on the label."
+evidence:
+  fields:
+    - languages.detected

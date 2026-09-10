@@ -3,11 +3,17 @@
 IMPLEMENTATION.md §14's diagram, as an explicit transition table rather than
 scattered conditionals:
 
-    queued -> validating -> preprocessing -> ocr -> extracting -> normalizing
-           -> classifying -> rule_eval -> scoring -> (needs_review | completed)
+    queued -> validating -> preprocessing -> ocr -> extracting
+           -> verifying_evidence -> normalizing -> classifying -> rule_eval
+           -> scoring -> (needs_review | completed)
     needs_review -> review -> completed
     any non-terminal -> failed | cancelled
     completed | failed | cancelled -> (nothing; terminal)
+
+`verifying_evidence` (P3-T6) is its own stage/checkpoint, not a side effect
+folded into `extracting` - a crash or retry there re-runs only this cheap,
+deterministic check (no LLM call), never re-burns tokens re-extracting
+something that already committed.
 
 `transition()` is the only function in this codebase that changes
 `Analysis.state` - it is the sole place an illegal transition can be
@@ -25,15 +31,37 @@ from sqlalchemy.orm import Session
 from app.analysis.models import TERMINAL_STATES, Analysis, AnalysisEvent, AnalysisState
 from app.db.base import utcnow
 from app.platform.errors import StateInvalid
+from app.platform.metrics import ANALYSES_TRANSITIONS_TOTAL, ANALYSIS_FAILURES_TOTAL
 
 _S = AnalysisState
+
+# Matches `AnalysisEvent.reason`'s own `String(500)` column exactly - found
+# live, not theoretical: a real Gemini `429 RESOURCE_EXHAUSTED` error body
+# (the provider's own quota/retry-delay JSON, not anything this codebase
+# constructs) ran past 500 characters and the `INSERT` itself failed with
+# `StringDataRightTruncation`, which happened *while already handling* the
+# original failure - so the analysis never even reached `failed`, it just
+# stayed stuck in whatever stage it was retrying, forever. Truncating here,
+# the one place `AnalysisEvent` rows are ever created, protects every
+# caller uniformly rather than requiring each one to know this column's
+# capacity.
+_REASON_MAX_LENGTH = 500
+
+
+def _fit_reason(reason: str | None) -> str | None:
+    if reason is None or len(reason) <= _REASON_MAX_LENGTH:
+        return reason
+    ellipsis = "…"
+    return reason[: _REASON_MAX_LENGTH - len(ellipsis)] + ellipsis
+
 
 ALLOWED_TRANSITIONS: dict[AnalysisState, frozenset[AnalysisState]] = {
     _S.QUEUED: frozenset({_S.VALIDATING, _S.FAILED, _S.CANCELLED}),
     _S.VALIDATING: frozenset({_S.PREPROCESSING, _S.FAILED, _S.CANCELLED}),
     _S.PREPROCESSING: frozenset({_S.OCR, _S.FAILED, _S.CANCELLED}),
     _S.OCR: frozenset({_S.EXTRACTING, _S.FAILED, _S.CANCELLED}),
-    _S.EXTRACTING: frozenset({_S.NORMALIZING, _S.FAILED, _S.CANCELLED}),
+    _S.EXTRACTING: frozenset({_S.EVIDENCE_VERIFICATION, _S.FAILED, _S.CANCELLED}),
+    _S.EVIDENCE_VERIFICATION: frozenset({_S.NORMALIZING, _S.FAILED, _S.CANCELLED}),
     _S.NORMALIZING: frozenset({_S.CLASSIFYING, _S.FAILED, _S.CANCELLED}),
     _S.CLASSIFYING: frozenset({_S.RULE_EVAL, _S.FAILED, _S.CANCELLED}),
     _S.RULE_EVAL: frozenset({_S.SCORING, _S.FAILED, _S.CANCELLED}),
@@ -81,6 +109,9 @@ def transition(
     if to_state is AnalysisState.FAILED:
         analysis.failure_stage = failure_stage or from_state.value
         analysis.retryable = retryable if retryable is not None else False
+        ANALYSIS_FAILURES_TOTAL.labels(stage=analysis.failure_stage).inc()
+
+    ANALYSES_TRANSITIONS_TOTAL.labels(state=to_state.value).inc()
 
     db.add(
         AnalysisEvent(
@@ -91,7 +122,7 @@ def transition(
             to_state=to_state,
             correlation_id=correlation_id,
             worker_id=worker_id,
-            reason=reason,
+            reason=_fit_reason(reason),
         )
     )
     db.flush()

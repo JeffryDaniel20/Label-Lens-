@@ -12,31 +12,61 @@ already done gets redone. If a stage's own function raises before completing,
 the transition never happens and the analysis stays exactly where it was -
 retrying re-attempts only that one stage, not the ones before it.
 
-`validating`, `ocr`, `extracting`, `normalizing`, and `classifying` are all
-real now - the full vertical slice from a rasterized page to a classified,
-normalized fact set. `preprocessing` stays a placeholder deliberately, not
+`validating`, `ocr`, `extracting`, `verifying_evidence`, `normalizing`, and
+`classifying` are all real now - the full vertical slice from a rasterized
+page to a classified, normalized fact set. `verifying_evidence` (P3-T6) is
+its own stage between `extracting` and `normalizing`, not folded into
+`extracting` itself: `app.extraction.evidence.verify_extraction` already did
+the real, deterministic, LLM-free citation check (fuzzy-matching every cited
+value against the real `OcrTokenRow` rows it claims to come from, demoting
+anything that doesn't hold up before `rule_eval` could ever see it), but it
+used to run as a side effect inside `extract_for_analysis` - meaning a crash
+during verification meant redoing the LLM call too. Splitting it into its
+own stage/checkpoint means a retry here only re-runs this cheap check, never
+re-burns tokens on an extraction that already committed successfully.
+`preprocessing` stays a placeholder deliberately, not
 because it is blocked: `app.vision.ocr.service.run_ocr` already calls
 `preprocess()` itself for each page immediately before OCR runs on it (P3-T1
 composed with P3-T2, not a gap), so a separate top-level preprocessing pass
 would either duplicate that work or run it on pages `ocr` hasn't reached yet
-for no benefit. Only `rule_eval` remains an honest placeholder for a real blocker: it needs
-a real published ruleset to evaluate against, which waits on **D-01** (first
-jurisdiction) actually being decided, not just proposed - `app/rules/
-evaluator.py` itself is done and 100%-tested.
+for no benefit.
+
+`rule_eval` is real now too (P5-T4, 2026-09-10), but genuinely still a
+no-op in this repository today, not a hollow wrapper pretending otherwise:
+`_rule_eval` resolves whether a published `Ruleset` actually exists for the
+analysis's own classified jurisdiction/category
+(`app.rules.publish.find_active_ruleset`) and only evaluates + persists
+findings if one does. No ruleset has ever been published for any
+jurisdiction in this codebase - that waits on **D-01** (first jurisdiction)
+actually being decided, not just proposed, and real rule content (P4-T5) -
+so `find_active_ruleset` always returns `None` today and this stage
+advances having done nothing, exactly like the placeholder it replaces.
+`app/rules/evaluator.py` itself has been done and 100%-tested since P4-T3;
+this is only the wiring that lets it actually run the moment a real
+ruleset exists, with no further code change here. An abstained
+classification (`analysis.category is None`, P3-T9) is skipped the same
+honest way - there is nothing to look a ruleset up for.
 
 `scoring` is real now too (P3-T8): `app.confidence.tiers.compute_analysis_tier`
-rolls every extracted field's confidence up into one `ConfidenceTier`, and
-`_scoring` routes explicitly - `high` falls through to
-`DEFAULT_NEXT_STATE[SCORING] = COMPLETED`, anything else returns
-`needs_review` directly, matching §14's "any analysis in Medium/Low tier ...
+rolls every extracted field's confidence *and* the analysis's own
+classification (P3-T9) confidence up into one `ConfidenceTier` - an
+abstained or weakly-resolved classification forces the tier down exactly
+like a missing/demoted field does, so `_classifying` running earlier in
+this same chain isn't just informational. `_scoring` routes explicitly -
+`high` falls through to `DEFAULT_NEXT_STATE[SCORING] = COMPLETED`, anything
+else returns `needs_review` directly, matching §14's "any analysis in
+Medium/Low tier ...
 routes to review." It still cannot weigh real compliance findings, since
-`rule_eval` produces none yet - a `completed` analysis today means "nothing
-was checked," not "compliant," and `compute_analysis_tier` computes over
-*every* extracted field rather than "fields any triggered rule depends on"
-because no ruleset can be resolved to say which fields those are (see that
-module's own docstring for why this is a safe, documented superset rather
-than a silent narrowing). `rule_eval`'s eventual wiring is what closes that
-gap, not a change to `scoring` itself.
+`rule_eval` produces none today - not because it structurally can't
+(P5-T4's persistence is real and wired, see above), but because no ruleset
+has ever been published for any jurisdiction (D-01) - a `completed`
+analysis today means "nothing was checked," not "compliant," and
+`compute_analysis_tier` computes over *every* extracted field rather than
+"fields any triggered rule depends on" because no ruleset can be resolved
+to say which fields those are (see that module's own docstring for why
+this is a safe, documented superset rather than a silent narrowing). A
+real ruleset being published is what closes that gap, not a change to
+`scoring` or `rule_eval`'s own wiring.
 
 Note on cost: `_extracting` records the provider's reported **token** usage
 via P5-T5's `record_stage_cost`, but not cents - converting tokens to money
@@ -68,6 +98,7 @@ STAGE_SEQUENCE: tuple[AnalysisState, ...] = (
     AnalysisState.PREPROCESSING,
     AnalysisState.OCR,
     AnalysisState.EXTRACTING,
+    AnalysisState.EVIDENCE_VERIFICATION,
     AnalysisState.NORMALIZING,
     AnalysisState.CLASSIFYING,
     AnalysisState.RULE_EVAL,
@@ -84,7 +115,8 @@ DEFAULT_NEXT_STATE: dict[AnalysisState, AnalysisState] = {
     AnalysisState.VALIDATING: AnalysisState.PREPROCESSING,
     AnalysisState.PREPROCESSING: AnalysisState.OCR,
     AnalysisState.OCR: AnalysisState.EXTRACTING,
-    AnalysisState.EXTRACTING: AnalysisState.NORMALIZING,
+    AnalysisState.EXTRACTING: AnalysisState.EVIDENCE_VERIFICATION,
+    AnalysisState.EVIDENCE_VERIFICATION: AnalysisState.NORMALIZING,
     AnalysisState.NORMALIZING: AnalysisState.CLASSIFYING,
     AnalysisState.CLASSIFYING: AnalysisState.RULE_EVAL,
     AnalysisState.RULE_EVAL: AnalysisState.SCORING,
@@ -158,6 +190,54 @@ def _extracting(db: Session, analysis: Analysis) -> AnalysisState | None:
         tokens_in=outcome.tokens_in,
         tokens_out=outcome.tokens_out,
     )
+    return None
+
+
+def _evidence_verification(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """P3-T6: deterministically checks every extracted field with cited OCR
+    tokens against that cited evidence, demoting anything that doesn't check
+    out - its own orchestrator stage/checkpoint, not an inline side effect
+    of `extracting`.
+
+    Evidence-first, by construction: this stage never calls the LLM or asks
+    it anything - it only compares what `_extracting` already persisted
+    (values + citations) against `OcrTokenRow` rows that exist independently
+    of extraction, so the model that made the claim never gets a vote on
+    whether its own citation holds up. A missing, forged (out-of-range, so
+    already dropped before this stage ever sees it), or textually
+    unsupported citation is never silently accepted: `verify_extraction`
+    rewrites the corresponding `LabelFacts` entry to an explicit
+    `Fact.missing(...)` *before* `Extraction.payload` is overwritten here, so
+    there is no code path by which a later stage could read a value that
+    failed this check.
+
+    Deterministic and side-effect-free beyond this analysis's own rows, so
+    there is no transient failure mode here worth retrying - the only way
+    this stage fails is a genuinely missing prerequisite (`extracting`
+    somehow never persisted an `Extraction` row), which a retry cannot fix
+    either.
+    """
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.extraction import evidence as evidence_gate
+    from app.extraction import facts as facts_schema
+    from app.extraction.models import Extraction
+
+    extraction = db.scalar(
+        select(Extraction)
+        .where(Extraction.analysis_id == analysis.id)
+        .order_by(Extraction.created_at.desc())
+    )
+    if extraction is None:
+        raise PermanentStageError("No extraction exists for this analysis to verify.")
+
+    label_facts = facts_schema.LabelFacts.model_validate(extraction.payload)
+    label_facts, _summary = evidence_gate.verify_extraction(
+        db, extraction=extraction, label_facts=label_facts
+    )
+    extraction.payload = label_facts.model_dump(mode="json")
+    db.flush()
     return None
 
 
@@ -391,6 +471,100 @@ def _classifying(db: Session, analysis: Analysis) -> AnalysisState | None:
     return None
 
 
+def _rule_eval(db: Session, analysis: Analysis) -> AnalysisState | None:
+    """Real rule evaluation (P5-T4) - see the module docstring for why this
+    is genuinely still a no-op in this repository today, not a hollow
+    wrapper: `find_active_ruleset` always returns `None` until a real
+    ruleset is published for some jurisdiction, which needs D-01 decided
+    and real rule content (P4-T5), neither of which this stage touches or
+    presumes.
+
+    Deterministic and side-effect-free beyond this one analysis's own rows
+    (same reasoning as `_evidence_verification`): no transient failure mode
+    exists here worth retrying, only a genuinely missing prerequisite.
+
+    **Reproducibility guard, the reason this checks for its own prior work
+    first** (the same idempotent-retry precedent `_ocr` already established
+    for a page that already has an `OcrResult`): `Finding` rows are
+    append-only (migration 0012 - no code path can update or delete one),
+    so if this stage ever committed real findings and then crashed before
+    its own state-machine transition committed, a naive retry calling
+    `persist_findings` a second time would create genuine duplicates that
+    nothing could ever clean up. Finding at least one already-persisted
+    `Finding` for this analysis means this stage's real work already
+    happened; it advances having done nothing *this* time, which is the
+    correct, reproducible outcome - the same findings, not doubled ones.
+    """
+    from sqlalchemy import select
+
+    from app.analysis.retry_policy import PermanentStageError
+    from app.db.base import utcnow
+    from app.extraction import facts as facts_schema
+    from app.extraction.models import Extraction
+    from app.extraction.normalize.allergens import ALLERGEN_SYNONYMS
+    from app.findings.models import Finding
+    from app.findings.service import persist_findings
+    from app.rules import evaluator as rules_evaluator
+    from app.rules.publish import find_active_ruleset, load_ruleset
+
+    if analysis.category is None or not analysis.jurisdictions:
+        # An honest abstention (P3-T9) has nothing to look a ruleset up
+        # for - not an error, the same "no analysis proceeds to rules with
+        # a guessed category" acceptance criterion that abstention itself
+        # exists to satisfy.
+        return None
+
+    already_evaluated = db.scalar(
+        select(Finding.id).where(Finding.analysis_id == analysis.id).limit(1)
+    )
+    if already_evaluated is not None:
+        return None  # a retried job after a crash - real work already committed
+
+    # MVP scope (see app.classification.classifier's own docstring: "one
+    # jurisdiction + one category"): the first classified jurisdiction is
+    # the one a ruleset is resolved against.
+    jurisdiction = analysis.jurisdictions[0]
+    as_of = utcnow().date()
+    ruleset = find_active_ruleset(
+        db, jurisdiction=jurisdiction, category=analysis.category, as_of=as_of
+    )
+    if ruleset is None:
+        return None  # nothing published yet - honest, not fabricated
+
+    extraction = db.scalar(
+        select(Extraction)
+        .where(Extraction.analysis_id == analysis.id)
+        .order_by(Extraction.created_at.desc())
+    )
+    if extraction is None:
+        raise PermanentStageError("No extraction exists for this analysis to evaluate.")
+
+    _ruleset, rules = load_ruleset(db, ruleset.id)
+    label_facts = facts_schema.LabelFacts.model_validate(extraction.payload)
+    findings = rules_evaluator.evaluate(
+        facts=label_facts.model_dump(mode="json"),
+        rules=rules,
+        as_of=as_of,
+        jurisdiction=jurisdiction,
+        category=analysis.category,
+        # `in_allergen_dictionary` (used by e.g. `IN-FSSAI-FOOD-ALLERGEN-
+        # NAMES-RECOGNIZED`, P4-T5) needs the one real, single-source-of-
+        # truth allergen dictionary passed in explicitly - see
+        # `app.rules.predicates`'s own docstring for why it is not imported
+        # inside the predicate itself.
+        predicate_kwargs={"in_allergen_dictionary": {"dictionary": ALLERGEN_SYNONYMS}},
+    )
+    persist_findings(
+        db, analysis=analysis, extraction=extraction, ruleset_id=ruleset.id, findings=findings
+    )
+    # Pinning (see `app.rules.publish`'s own docstring): this analysis is
+    # now permanently tied to the exact ruleset content it was judged
+    # against, reproducible byte-for-byte even once newer versions publish.
+    analysis.ruleset_version_id = ruleset.id
+    db.flush()
+    return None
+
+
 def _scoring(db: Session, analysis: Analysis) -> AnalysisState | None:
     """Confidence tiering (P3-T8), now wired for real. Explicitly returns
     `needs_review` for anything below `high` rather than relying on
@@ -410,7 +584,7 @@ def _scoring(db: Session, analysis: Analysis) -> AnalysisState | None:
     if extraction is None:
         raise PermanentStageError("No extraction exists for this analysis to score.")
 
-    result = compute_analysis_tier(db, extraction=extraction)
+    result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
     analysis.confidence_tier = result.tier
     db.flush()
 
@@ -424,9 +598,10 @@ STAGE_FUNCTIONS: dict[AnalysisState, StageFn] = {
     AnalysisState.PREPROCESSING: _placeholder,
     AnalysisState.OCR: _ocr,
     AnalysisState.EXTRACTING: _extracting,
+    AnalysisState.EVIDENCE_VERIFICATION: _evidence_verification,
     AnalysisState.NORMALIZING: _normalizing,
     AnalysisState.CLASSIFYING: _classifying,
-    AnalysisState.RULE_EVAL: _placeholder,
+    AnalysisState.RULE_EVAL: _rule_eval,
     AnalysisState.SCORING: _scoring,
 }
 

@@ -1,8 +1,11 @@
 """The vertical-slice pipeline stages: `validating`, `ocr`, `normalizing`,
-`classifying` - real work now, not placeholders (see
+`classifying`, `scoring` - real work now, not placeholders (see
 `app.analysis.stages`'s module docstring). `extracting` has its own suite
-(`test_extraction_stage.py`, from P3-T5); `rule_eval`/`scoring` remain
-placeholders, out of scope until D-01.
+(`test_extraction_stage.py`, from P3-T5); `rule_eval` is real too as of
+P5-T4 (2026-09-10) - see `tests/integration/test_rule_eval_stage.py` for its
+own dedicated wiring/idempotency tests and
+`tests/integration/test_fssai_pack_pipeline.py` for an end-to-end run
+against the real `in-fssai-food` pack (P4-T5).
 """
 
 from __future__ import annotations
@@ -17,8 +20,16 @@ from sqlalchemy import select
 from app.analysis import service as analysis_service
 from app.analysis.models import AnalysisState, ConfidenceTier
 from app.analysis.retry_policy import PermanentStageError, TransientStageError
-from app.analysis.stages import _classifying, _normalizing, _ocr, _validating
+from app.analysis.stages import (
+    _classifying,
+    _evidence_verification,
+    _normalizing,
+    _ocr,
+    _scoring,
+    _validating,
+)
 from app.catalog.models import File, FilePage, FileStatus, Product, ProductVersion
+from app.confidence.tiers import compute_analysis_tier
 from app.extraction import facts as facts_schema
 from app.extraction.llm.base import ProviderResponse, ProviderUsage
 from app.extraction.models import ExtractedField, Extraction
@@ -520,6 +531,142 @@ class TestClassifyingStage:
             _classifying(db, analysis)
 
 
+# Only `quantity.net_quantity` is present - one of three category signals
+# (`ingredients.items`, `nutrition.rows`, `quantity.net_quantity`), giving
+# `_category_confidence` 1/3 ~= 0.33, below `CATEGORY_CONFIDENCE_THRESHOLD`
+# (0.66) - a real, honest abstention (no hints given either), not a
+# contrived one, while the one field that IS present is well-cited and
+# confidently extracted, so it does not itself force the tier down - useful
+# for isolating classification's own contribution to the final tier from
+# the pipeline's separate, already-documented "any not-found field forces
+# Low" behavior (see `TestScoringStage`).
+ONLY_QUANTITY_JSON = """
+{
+  "ingredients_declared_text": {"value": null, "not_found_reason": "not printed",
+                                "token_ids": [], "confidence": 0.0},
+  "allergens_declaration_text": {"value": null, "not_found_reason": "not printed",
+                                 "token_ids": [], "confidence": 0.0},
+  "allergens_declared": {"values": [], "not_found_reason": "not printed",
+                         "token_ids": [], "confidence": 0.0},
+  "nutrition_serving_size": {"value": null, "not_found_reason": "not printed",
+                             "token_ids": [], "confidence": 0.0},
+  "nutrition_rows": [],
+  "nutrition_rows_not_found_reason": "not printed",
+  "quantity_net_quantity": {"value": "250 g", "not_found_reason": null,
+                            "token_ids": [1], "confidence": 0.99},
+  "dates_manufacture": {"value": null, "not_found_reason": "not printed",
+                        "token_ids": [], "confidence": 0.0},
+  "dates_expiry_or_best_before": {"value": null, "not_found_reason": "not printed",
+                                  "token_ids": [], "confidence": 0.0},
+  "dates_batch_number": {"value": null, "not_found_reason": "not printed",
+                         "token_ids": [], "confidence": 0.0},
+  "claims": [], "claims_not_found_reason": "not printed",
+  "addresses": [], "addresses_not_found_reason": "not printed",
+  "languages_detected": {"values": [], "not_found_reason": "not printed",
+                         "token_ids": [], "confidence": 0.0}
+}
+"""
+
+
+class TestScoringAfterARealClassification:
+    """P3-T8's own real integration test through the existing analysis
+    pipeline: `_evidence_verification`, `_normalizing`, `_classifying`, and
+    `_scoring` all run for real, in the real pipeline order, against a real
+    `Extraction`/`ExtractedField` set (via the real `extract_for_analysis`,
+    stubbed only at the LLM provider boundary) - not a hand-constructed
+    `Analysis.category_confidence` the way `tests/integration/
+    test_confidence_tiers.py`'s own more granular suite does. This is what
+    actually proves classification's confidence is wired into the real
+    orchestrator, not just into `compute_analysis_tier` as a library call.
+    """
+
+    def test_a_real_resolved_classification_feeds_its_own_confidence_into_the_tier(
+        self, db, basic
+    ) -> None:
+        org, product, version, file, page, analysis = basic
+        product.category_hint = "packaged_food"
+        product.market_codes = ["IN"]
+        db.flush()
+        _add_ocr_tokens(db, org, page)
+        extraction = _extraction_for(db, org, analysis, text=NORMALIZING_JSON)
+
+        assert _evidence_verification(db, analysis) is None
+        db.commit()
+        assert _normalizing(db, analysis) is None
+        db.commit()
+        assert _classifying(db, analysis) is None
+        db.commit()
+
+        db.refresh(analysis)
+        # Real values `_classifying` actually computed - not hand-set.
+        assert analysis.category == "packaged_food"
+        assert analysis.category_confidence > 0
+        assert analysis.jurisdiction_confidence == pytest.approx(1.0)  # exact market-code match
+
+        db.refresh(extraction)
+        result = compute_analysis_tier(db, extraction=extraction, analysis=analysis)
+        category_entry = next(
+            f for f in result.fields if f.field_path == "classification.category"
+        )
+        jurisdiction_entry = next(
+            f for f in result.fields if f.field_path == "classification.jurisdiction"
+        )
+        # The real, `_classifying`-computed confidences, not zeros or a
+        # default - proof this signal actually flows end to end.
+        assert category_entry.confidence == pytest.approx(analysis.category_confidence)
+        assert jurisdiction_entry.confidence == pytest.approx(1.0)
+        assert jurisdiction_entry.tier is ConfidenceTier.HIGH  # exact hint match -> the ceiling
+
+        next_state = _scoring(db, analysis)
+        db.commit()
+        db.refresh(analysis)
+        # This fixture's own `dates.manufacture_date` field (P3-T7's own
+        # test data, unrelated to classification) is genuinely low-
+        # confidence (0.5) even though it verifies textually, which alone
+        # already forces mandatory review - the real, honest result of
+        # combining every signal, not a contrived clean-room outcome.
+        assert next_state is AnalysisState.NEEDS_REVIEW
+        assert analysis.confidence_tier is ConfidenceTier.LOW
+
+    def test_a_real_abstained_classification_forces_low_through_the_real_pipeline(
+        self, db, basic
+    ) -> None:
+        """No category hint, no market code, and an address-free label -
+        `_classifying` genuinely abstains here, with no contrivance - and
+        that real abstention must reach `_scoring`'s real final tier, even
+        though the one field this fixture actually has is confidently
+        extracted and verifies cleanly on its own."""
+        org, product, version, file, page, analysis = basic
+        _add_ocr_tokens(db, org, page)
+        extraction = _extraction_for(db, org, analysis, text=ONLY_QUANTITY_JSON)
+
+        assert _evidence_verification(db, analysis) is None
+        db.commit()
+        assert _normalizing(db, analysis) is None
+        db.commit()
+        assert _classifying(db, analysis) is None
+        db.commit()
+
+        db.refresh(analysis)
+        assert analysis.category is None  # a real, honest abstention
+        assert analysis.jurisdictions == []
+
+        quantity_field = db.scalar(
+            select(ExtractedField).where(
+                ExtractedField.extraction_id == extraction.id,
+                ExtractedField.field_path == "quantity.net_quantity",
+            )
+        )
+        assert quantity_field.verified is True  # the one real field checks out on its own
+
+        next_state = _scoring(db, analysis)
+        db.commit()
+        db.refresh(analysis)
+
+        assert next_state is AnalysisState.NEEDS_REVIEW
+        assert analysis.confidence_tier is ConfidenceTier.LOW
+
+
 class TestVerticalSlice:
     """The literal deliverable: a real analysis composes every wired stage,
     end to end, through `advance_analysis` - not each stage tested in
@@ -551,16 +698,18 @@ class TestVerticalSlice:
         monkeypatch.setattr("app.extraction.llm.build_provider", lambda _s: _StubProvider())
 
         # queued -> validating -> preprocessing -> ocr -> extracting ->
-        # normalizing -> classifying -> rule_eval -> scoring -> needs_review.
-        # `rule_eval` is still an honest placeholder (D-01), but `scoring`
-        # (P3-T8) is real now: `VALID_JSON` honestly leaves several fields
-        # not-found (no nutrition panel, no claims, no address) and cites an
-        # out-of-range OCR token for two more, given this test's own 2-token
-        # `_FakeOcrEngine` fixture - `compute_analysis_tier` correctly forces
-        # those to Low and routes to mandatory review rather than silently
+        # verifying_evidence -> normalizing -> classifying -> rule_eval ->
+        # scoring -> needs_review. `rule_eval` is still an honest placeholder
+        # (D-01), but `scoring` (P3-T8) is real now: `VALID_JSON` honestly
+        # leaves several fields not-found (no nutrition panel, no claims, no
+        # address) and cites an out-of-range OCR token for two more, given
+        # this test's own 2-token `_FakeOcrEngine` fixture - `verifying_
+        # evidence` (P3-T6) demotes those two to an explicit absence before
+        # `compute_analysis_tier` ever sees them, which correctly forces the
+        # tier to Low and routes to mandatory review rather than silently
         # completing, exactly matching this codebase's "absence of data is
         # never treated as compliance" principle (IMPLEMENTATION.md §1).
-        for _ in range(9):
+        for _ in range(10):
             advance_analysis(db, analysis)
             db.commit()
 

@@ -89,6 +89,7 @@ class TestReapStalledAnalyses:
             AnalysisState.PREPROCESSING,
             AnalysisState.OCR,
             AnalysisState.EXTRACTING,
+            AnalysisState.EVIDENCE_VERIFICATION,
             AnalysisState.NORMALIZING,
             AnalysisState.CLASSIFYING,
             AnalysisState.RULE_EVAL,

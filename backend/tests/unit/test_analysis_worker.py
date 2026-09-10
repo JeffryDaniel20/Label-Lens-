@@ -24,6 +24,7 @@ from app.analysis.worker import (
     QUEUE_LLM,
     QUEUE_OCR,
     WorkerSettings,
+    _worker_queue_name_from_env,
     _worker_redis_settings_from_env,
     queue_for_state,
     run_analysis_stage,
@@ -87,6 +88,7 @@ class TestQueueRouting:
         for state in (
             AnalysisState.VALIDATING,
             AnalysisState.PREPROCESSING,
+            AnalysisState.EVIDENCE_VERIFICATION,
             AnalysisState.NORMALIZING,
             AnalysisState.CLASSIFYING,
             AnalysisState.RULE_EVAL,
@@ -111,6 +113,25 @@ class TestRedisSettingsFallback:
         assert settings == RedisSettings()
 
 
+class TestWorkerQueueNameFromEnv:
+    """`arq`'s CLI has no `--queue` override - `LABELLENS_WORKER_QUEUE` is
+    what lets `arq app.analysis.worker.WorkerSettings` actually start a
+    worker that watches `ocr`/`llm` instead of only ever `default` (see
+    `_worker_queue_name_from_env`'s own docstring for why this matters:
+    without it, any analysis reaching those stages stalls forever)."""
+
+    def test_defaults_to_the_default_queue_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("LABELLENS_WORKER_QUEUE", raising=False)
+        assert _worker_queue_name_from_env() == QUEUE_DEFAULT
+
+    def test_respects_an_explicit_queue_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("LABELLENS_WORKER_QUEUE", QUEUE_OCR)
+        assert _worker_queue_name_from_env() == QUEUE_OCR
+
+        monkeypatch.setenv("LABELLENS_WORKER_QUEUE", QUEUE_LLM)
+        assert _worker_queue_name_from_env() == QUEUE_LLM
+
+
 class TestWorkerSettingsContract:
     def test_registers_the_stage_and_pdf_rendering_functions(self) -> None:
         from app.reports.worker import render_report_pdf_job
@@ -123,6 +144,14 @@ class TestWorkerSettingsContract:
 
     def test_retries_are_enabled(self) -> None:
         assert WorkerSettings.max_tries > 1
+
+    def test_queue_name_defaults_to_default_at_import_time(self) -> None:
+        # `WorkerSettings.queue_name` is evaluated once, at import - this
+        # process's own import already happened with no
+        # `LABELLENS_WORKER_QUEUE` set, so it must be `default`, exactly
+        # what a bare `arq app.analysis.worker.WorkerSettings` invocation
+        # needs for the `default` queue's own worker.
+        assert WorkerSettings.queue_name == QUEUE_DEFAULT
 
 
 class TestRunAnalysisStageChaining:
@@ -150,15 +179,17 @@ class TestRunAnalysisStageChaining:
         for state in (
             AnalysisState.OCR,
             AnalysisState.EXTRACTING,
+            AnalysisState.EVIDENCE_VERIFICATION,
             AnalysisState.NORMALIZING,
             AnalysisState.CLASSIFYING,
             AnalysisState.SCORING,
         ):
             monkeypatch.setitem(STAGE_FUNCTIONS, state, lambda db, analysis: None)
-        # 8 calls: queued->validating->preprocessing->ocr->extracting->
-        # normalizing->classifying->rule_eval->scoring - drives it all the
-        # way to `scoring` so the *next* call reaches `completed`.
-        for _ in range(8):
+        # 9 calls: queued->validating->preprocessing->ocr->extracting->
+        # verifying_evidence->normalizing->classifying->rule_eval->scoring -
+        # drives it all the way to `scoring` so the *next* call reaches
+        # `completed`.
+        for _ in range(9):
             pool = _FakePool()
             asyncio.run(
                 run_analysis_stage(

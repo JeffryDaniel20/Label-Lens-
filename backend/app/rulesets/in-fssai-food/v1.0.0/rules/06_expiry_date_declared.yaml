@@ -1,0 +1,32 @@
+rule_key: IN-FSSAI-FOOD-EXPIRY-DATE-DECLARED
+version: 1
+title: "Expiry, use-by, or best-before date is declared"
+citation: >
+  Food Safety and Standards (Labelling and Display) Regulations, 2020,
+  Regulation 5(10)(a): "'Date of manufacture or packaging' and 'Expiry/Use
+  by' shall be declared on the label. However, expression 'Best before' may
+  also be used as optional or additional information." (Regulation 8(4)(d)
+  lists a small set of foods - e.g. fresh produce, wine, vinegar - exempted
+  from this declaration entirely; not modeled here for the same reason as
+  the manufacture-date rule above.)
+severity: critical
+effective_from: 2022-07-01
+effective_to: null
+applicability:
+  jurisdiction: ["IN"]
+  category: ["packaged_food"]
+  predicates: []
+logic:
+  regex_matches:
+    path: dates.expiry_or_best_before
+    pattern: "\\S"
+requires_fields:
+  - dates.expiry_or_best_before
+on_missing_fields: insufficient_data
+message:
+  pass: "An expiry, use-by, or best-before date is declared on the label."
+  fail: "The expiry, use-by, or best-before date declaration is blank."
+  insufficient_data: "Could not determine whether an expiry or best-before date is declared."
+evidence:
+  fields:
+    - dates.expiry_or_best_before
