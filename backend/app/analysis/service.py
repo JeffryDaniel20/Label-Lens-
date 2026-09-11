@@ -148,6 +148,25 @@ def get_analysis(db: Session, *, organization_id: uuid.UUID, analysis_id: uuid.U
     return analysis
 
 
+def get_latest_analysis_for_version(
+    db: Session, *, organization_id: uuid.UUID, version_id: uuid.UUID
+) -> Analysis | None:
+    """The most recently started analysis for a product version, or `None`
+    if it has never been analyzed - the read-only counterpart to
+    `create_or_get_analysis`'s own idempotent lookup (P6-T7's version
+    comparison needs "the current analysis for this version" without also
+    submitting a new one). A version can accumulate more than one `Analysis`
+    row over time (a new file set changes the idempotency key), so "latest"
+    is the honest answer, not "the only one."""
+    stmt = tenant_scoped(
+        select(Analysis).where(Analysis.product_version_id == version_id),
+        Analysis,
+        organization_id,
+    ).order_by(Analysis.started_at.desc())
+    analysis: Analysis | None = db.scalar(stmt)
+    return analysis
+
+
 def get_events(
     db: Session, *, organization_id: uuid.UUID, analysis_id: uuid.UUID
 ) -> list[AnalysisEvent]:

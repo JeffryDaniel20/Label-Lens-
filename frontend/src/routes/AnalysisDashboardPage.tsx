@@ -2,13 +2,8 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError } from "@/api/client";
-import type {
-  AnalysisState,
-  ConfidenceTier,
-  FindingStatus,
-  ReportSnapshot,
-  Severity,
-} from "@/api/types";
+import type { AnalysisState, ConfidenceTier, ReportSnapshot } from "@/api/types";
+import { FindingsPanel } from "@/components/FindingsPanel";
 import { LabelViewer } from "@/components/LabelViewer";
 import {
   useAnalysis,
@@ -21,6 +16,7 @@ import { useAnalysisSse } from "@/features/analysis/useAnalysisSse";
 import { useSession } from "@/features/auth/session";
 import { useProduct } from "@/features/catalog/products";
 import { useProductVersion } from "@/features/catalog/versions";
+import { useAnalysisSignoff, useSignOffAnalysis } from "@/features/review/review";
 import { useToast } from "@/lib/toast";
 
 const STATE_LABELS: Record<AnalysisState, string> = {
@@ -65,20 +61,6 @@ const TIER_STYLES: Record<ConfidenceTier, string> = {
   low: "bg-red-100 text-red-800",
 };
 
-const SEVERITY_STYLES: Record<Severity, string> = {
-  critical: "bg-red-100 text-red-800",
-  major: "bg-orange-100 text-orange-800",
-  minor: "bg-amber-100 text-amber-800",
-  advisory: "bg-slate-100 text-slate-700",
-};
-
-const FINDING_STATUS_STYLES: Record<FindingStatus, string> = {
-  pass: "bg-emerald-100 text-emerald-800",
-  fail: "bg-red-100 text-red-800",
-  insufficient_data: "bg-amber-100 text-amber-800",
-  not_applicable: "bg-slate-100 text-slate-700",
-};
-
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(4)}`;
 }
@@ -96,9 +78,14 @@ export function AnalysisDashboardPage() {
   const { data: findings } = useFindings(analysisId);
   const { data: reports } = useReports(analysisId);
   const { data: session } = useSession();
-  const canGenerateReport = new Set(session?.capabilities ?? []).has("report:generate");
+  const capabilities = new Set(session?.capabilities ?? []);
+  const canGenerateReport = capabilities.has("report:generate");
+  const canDecide = capabilities.has("finding:decide");
+  const canSignOff = capabilities.has("analysis:signoff");
   const { connected } = useAnalysisSse(analysisId);
   const generateReport = useGenerateReport(analysisId ?? "");
+  const { data: signoff } = useAnalysisSignoff(analysisId);
+  const signOffAnalysis = useSignOffAnalysis(analysisId ?? "");
   const { showToast } = useToast();
   const [selectedFindingId, setSelectedFindingId] = useState<string | undefined>(undefined);
 
@@ -115,6 +102,15 @@ export function AnalysisDashboardPage() {
   const isLive = !["completed", "failed", "cancelled", "needs_review", "review"].includes(
     analysis.state,
   );
+
+  function handleSignOff() {
+    signOffAnalysis.mutate(undefined, {
+      onSuccess: () => showToast("Review signed off. This analysis is now read-only.", "success"),
+      onError: (err) => {
+        showToast(err instanceof ApiError ? err.message : "Could not sign off.", "error");
+      },
+    });
+  }
 
   function handleGenerateReport() {
     generateReport.mutate(undefined, {
@@ -160,7 +156,29 @@ export function AnalysisDashboardPage() {
             {analysis.confidence_tier} confidence
           </span>
         )}
+        {signoff && (
+          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-sm font-medium text-emerald-800">
+            Signed off &middot; read-only
+          </span>
+        )}
       </div>
+
+      {!signoff && (analysis.state === "needs_review" || analysis.state === "review") && (
+        <div className="mt-4">
+          {canSignOff ? (
+            <button
+              type="button"
+              onClick={handleSignOff}
+              disabled={signOffAnalysis.isPending}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            >
+              {signOffAnalysis.isPending ? "Signing off…" : "Sign off review"}
+            </button>
+          ) : (
+            <p className="text-sm text-slate-600">Awaiting reviewer sign-off.</p>
+          )}
+        </div>
+      )}
 
       <div className="mt-4 h-2 w-full max-w-md rounded-full bg-slate-200">
         <div
@@ -222,53 +240,16 @@ export function AnalysisDashboardPage() {
       )}
 
       <h2 className="mt-8 text-lg font-medium text-slate-900">Compliance findings</h2>
-      {findings && findings.length === 0 && (
-        <p className="mt-2 text-slate-600">
-          No compliance findings are available for this analysis.
-        </p>
-      )}
-      {findings && findings.length > 0 && (
-        <ul className="mt-4 divide-y divide-slate-200 rounded-md border border-slate-200 bg-white">
-          {findings.map((finding) => {
-            const hasEvidence = finding.evidence_refs.length > 0;
-            const isSelected = finding.id === selectedFindingId;
-            return (
-              <li key={finding.id}>
-                <button
-                  type="button"
-                  disabled={!hasEvidence}
-                  onClick={() => setSelectedFindingId(finding.id)}
-                  aria-pressed={isSelected}
-                  className={`flex w-full items-center justify-between px-4 py-3 text-left ${
-                    hasEvidence ? "cursor-pointer hover:bg-slate-50" : "cursor-default"
-                  } ${isSelected ? "bg-amber-50" : ""}`}
-                >
-                  <div>
-                    <p className="font-medium text-slate-900">{finding.rule_key}</p>
-                    {finding.message && <p className="text-sm text-slate-600">{finding.message}</p>}
-                    {hasEvidence && (
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {isSelected ? "Showing evidence above ↑" : "Click to view evidence"}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${SEVERITY_STYLES[finding.severity]}`}
-                    >
-                      {finding.severity}
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${FINDING_STATUS_STYLES[finding.status]}`}
-                    >
-                      {finding.status}
-                    </span>
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+      {productId && versionId && (
+        <FindingsPanel
+          productId={productId}
+          versionId={versionId}
+          analysisId={analysisId ?? ""}
+          findings={findings ?? []}
+          canDecide={canDecide}
+          selectedFindingId={selectedFindingId}
+          onSelectFinding={setSelectedFindingId}
+        />
       )}
 
       <h2 className="mt-8 text-lg font-medium text-slate-900">Extracted information</h2>

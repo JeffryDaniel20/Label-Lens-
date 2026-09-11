@@ -48,6 +48,8 @@ class AuditAction(enum.StrEnum):
     ANALYSIS_CANCELLED = "analysis.cancelled"
     FINDING_DECIDED = "finding.decided"
     FIELD_CORRECTED = "field.corrected"
+    ANALYSIS_ASSIGNED = "analysis.assigned"
+    ANALYSIS_SIGNED_OFF = "analysis.signed_off"
 
 
 class AuditLog(UUIDPrimaryKey, Base):

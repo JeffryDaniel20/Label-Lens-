@@ -35,6 +35,18 @@ export type Severity = components["schemas"]["Severity"];
 export type EvidenceRefOut = components["schemas"]["EvidenceRefOut"];
 export type ReportOut = components["schemas"]["ReportOut"];
 
+export type DecisionAction = components["schemas"]["DecisionAction"];
+export type FindingDecisionOut = components["schemas"]["FindingDecisionOut"];
+export type FindingDecisionRequest = components["schemas"]["FindingDecisionRequest"];
+export type FieldCorrectionRequest = components["schemas"]["FieldCorrectionRequest"];
+export type FieldCorrectionResponse = components["schemas"]["FieldCorrectionResponse"];
+export type ReviewQueueEntryOut = components["schemas"]["ReviewQueueEntryOut"];
+export type AssignReviewerRequest = components["schemas"]["AssignReviewerRequest"];
+export type SignoffOut = components["schemas"]["SignoffOut"];
+export type FieldDiffOut = components["schemas"]["FieldDiffOut"];
+export type FindingDiffOut = components["schemas"]["FindingDiffOut"];
+export type VersionComparisonOut = components["schemas"]["VersionComparisonOut"];
+
 /** `GET /v1/analyses/{id}/events`'s JSON-history shape - the backend route
  * declares `response_model=None` (its real return type is a union with
  * `StreamingResponse`, which FastAPI/OpenAPI can't express as a schema), so

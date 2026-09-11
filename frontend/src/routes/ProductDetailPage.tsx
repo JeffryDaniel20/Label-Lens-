@@ -21,6 +21,16 @@ export function ProductDetailPage() {
   const { data: session } = useSession();
   const canManage = new Set(session?.capabilities ?? []).has("product:manage");
   const [showCreate, setShowCreate] = useState(false);
+  const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
+
+  function toggleSelected(versionId: string) {
+    setSelectedVersionIds((current) => {
+      if (current.includes(versionId)) return current.filter((id) => id !== versionId);
+      // At most two versions can ever be compared - selecting a third
+      // replaces the oldest selection rather than growing unbounded.
+      return [...current, versionId].slice(-2);
+    });
+  }
 
   if (isPending) return <p className="text-slate-600">Loading product…</p>;
   if (error || !product) return <p className="text-red-700">Could not load this product.</p>;
@@ -36,17 +46,35 @@ export function ProductDetailPage() {
         {product.category_hint ? ` · ${product.category_hint}` : ""}
       </p>
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-6 flex items-center justify-between gap-2">
         <h2 className="text-lg font-medium text-slate-900">Label versions</h2>
-        {canManage && (
-          <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
-          >
-            {showCreate ? "Cancel" : "New version"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {selectedVersionIds.length === 2 &&
+            (() => {
+              const [a, b] = selectedVersionIds
+                .map((id) => versions?.find((v) => v.id === id))
+                .filter((v): v is NonNullable<typeof v> => v !== undefined)
+                .sort((x, y) => x.version_no - y.version_no);
+              if (!a || !b) return null;
+              return (
+                <Link
+                  to={`/products/${product.id}/compare/${a.id}/${b.id}`}
+                  className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Compare v{a.version_no} &rarr; v{b.version_no}
+                </Link>
+              );
+            })()}
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => setShowCreate((v) => !v)}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+            >
+              {showCreate ? "Cancel" : "New version"}
+            </button>
+          )}
+        </div>
       </div>
 
       {showCreate && (
@@ -56,14 +84,25 @@ export function ProductDetailPage() {
       {versions && versions.length === 0 && (
         <p className="mt-4 text-slate-600">No label versions yet.</p>
       )}
+      {versions && versions.length > 1 && (
+        <p className="mt-2 text-xs text-slate-500">Select two versions below to compare them.</p>
+      )}
 
       {versions && versions.length > 0 && (
         <ul className="mt-4 divide-y divide-slate-200 rounded-md border border-slate-200 bg-white">
           {versions.map((version) => (
-            <li key={version.id}>
+            <li key={version.id} className="flex items-center gap-2 px-4 py-3 hover:bg-slate-50">
+              {versions.length > 1 && (
+                <input
+                  type="checkbox"
+                  aria-label={`Select v${version.version_no} for comparison`}
+                  checked={selectedVersionIds.includes(version.id)}
+                  onChange={() => toggleSelected(version.id)}
+                />
+              )}
               <Link
                 to={`/products/${product.id}/versions/${version.id}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-slate-50"
+                className="flex flex-1 items-center justify-between"
               >
                 <div>
                   <p className="font-medium text-slate-900">

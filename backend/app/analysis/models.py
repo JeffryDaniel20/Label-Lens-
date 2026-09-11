@@ -147,6 +147,16 @@ class Analysis(UUIDPrimaryKey, TimestampMixin, Base):
     parent_analysis_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("analyses.id", ondelete="SET NULL"), default=None
     )
+    # P6-T6's review queue: who is working this analysis. A genuinely
+    # mutable field even on an otherwise-append-heavy row - safe because it
+    # only ever changes while `state` is non-terminal (`needs_review`/
+    # `review`), which `reject_terminal_analysis_mutation()` (migration
+    # 0006) already permits; the same trigger correctly freezes it, along
+    # with everything else on the row, the moment the analysis reaches a
+    # real terminal state.
+    assigned_reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
 
 
 class AnalysisEvent(UUIDPrimaryKey, Base):

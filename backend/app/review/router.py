@@ -1,5 +1,6 @@
-"""Review-workflow HTTP endpoints (P6-T5): decide on a finding, correct an
-extracted field."""
+"""Review-workflow HTTP endpoints: decide on a finding, correct an
+extracted field (P6-T5); the review queue, reviewer assignment, and
+sign-off (P6-T6)."""
 
 from __future__ import annotations
 
@@ -149,3 +150,120 @@ def correct_field(
         correction=FieldCorrectionOut.model_validate(correction),
         child_analysis=AnalysisOut.from_analysis(child),
     )
+
+
+class AssignReviewerRequest(BaseModel):
+    reviewer_id: uuid.UUID | None = None
+
+
+class ReviewQueueEntryOut(BaseModel):
+    analysis: AnalysisOut
+    sla_since: dt.datetime
+
+
+class SignoffRequest(BaseModel):
+    pass
+
+
+class SignoffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    analysis_id: uuid.UUID
+    ruleset_version_id: uuid.UUID | None
+    finding_set_hash: str
+    signed_off_at: dt.datetime
+    actor_label: str | None
+
+
+@router.get(
+    # `/review/queue`, not `/analyses/queue`: `app.analysis.router`'s own
+    # `GET /analyses/{analysis_id}` is registered before this router in
+    # `app.main` and would otherwise match `queue` as a (UUID-invalid)
+    # `analysis_id` first, 422ing before this real route was ever reached -
+    # a distinct prefix sidesteps the whole path-collision class of bug
+    # rather than depending on router registration order.
+    "/review/queue",
+    response_model=list[ReviewQueueEntryOut],
+)
+def get_review_queue(
+    principal: Principal = Depends(require(Capability.ANALYSIS_VIEW)),
+    db: Session = Depends(get_db),
+) -> list[ReviewQueueEntryOut]:
+    entries = service.list_review_queue(db, organization_id=principal.org_id)
+    return [
+        ReviewQueueEntryOut(analysis=AnalysisOut.from_analysis(analysis), sla_since=sla_since)
+        for analysis, sla_since in entries
+    ]
+
+
+@router.patch("/analyses/{analysis_id}/assignment", response_model=AnalysisOut)
+def assign_reviewer(
+    analysis_id: uuid.UUID,
+    payload: AssignReviewerRequest,
+    request: Request,
+    principal: Principal = Depends(require(Capability.FINDING_DECIDE)),
+    db: Session = Depends(get_db),
+) -> AnalysisOut:
+    analysis = analysis_service.get_analysis(
+        db, organization_id=principal.org_id, analysis_id=analysis_id
+    )
+    service.assign_reviewer(
+        db, organization_id=principal.org_id, analysis=analysis, reviewer_id=payload.reviewer_id
+    )
+    audit.record(
+        db,
+        action=AuditAction.ANALYSIS_ASSIGNED,
+        actor_type=principal.actor_type,
+        actor_id=principal.actor_id,
+        actor_label=principal.actor_label,
+        organization_id=principal.org_id,
+        resource_type="analysis",
+        resource_id=analysis.id,
+        after={"reviewer_id": str(payload.reviewer_id) if payload.reviewer_id else None},
+        ip=_ip(request),
+    )
+    return AnalysisOut.from_analysis(analysis)
+
+
+@router.post("/analyses/{analysis_id}/signoff", response_model=SignoffOut, status_code=201)
+def sign_off_analysis(
+    analysis_id: uuid.UUID,
+    request: Request,
+    principal: Principal = Depends(require(Capability.ANALYSIS_SIGNOFF)),
+    db: Session = Depends(get_db),
+) -> SignoffOut:
+    analysis = analysis_service.get_analysis(
+        db, organization_id=principal.org_id, analysis_id=analysis_id
+    )
+    signoff = service.sign_off_analysis(
+        db,
+        organization_id=principal.org_id,
+        analysis=analysis,
+        actor_id=principal.actor_id,
+        actor_type=principal.actor_type,
+        actor_label=principal.actor_label,
+    )
+    audit.record(
+        db,
+        action=AuditAction.ANALYSIS_SIGNED_OFF,
+        actor_type=principal.actor_type,
+        actor_id=principal.actor_id,
+        actor_label=principal.actor_label,
+        organization_id=principal.org_id,
+        resource_type="analysis",
+        resource_id=analysis.id,
+        after={"finding_set_hash": signoff.finding_set_hash},
+        ip=_ip(request),
+    )
+    return SignoffOut.model_validate(signoff)
+
+
+@router.get("/analyses/{analysis_id}/signoff", response_model=SignoffOut | None)
+def get_signoff(
+    analysis_id: uuid.UUID,
+    principal: Principal = Depends(require(Capability.ANALYSIS_VIEW)),
+    db: Session = Depends(get_db),
+) -> SignoffOut | None:
+    analysis_service.get_analysis(db, organization_id=principal.org_id, analysis_id=analysis_id)
+    signoff = service.get_signoff(db, organization_id=principal.org_id, analysis_id=analysis_id)
+    return SignoffOut.model_validate(signoff) if signoff else None

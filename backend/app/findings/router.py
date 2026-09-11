@@ -19,6 +19,7 @@ from app.identity.deps import Principal, get_db, require
 from app.identity.rbac import Capability
 from app.platform.config import Settings, get_settings
 from app.rules.evaluator import FindingStatus
+from app.rules.models import RuleRow
 from app.rules.schema import Severity
 from app.storage import service as storage_service
 from app.storage.client import ObjectStorageClient
@@ -43,6 +44,14 @@ class FindingOut(BaseModel):
     details: dict[str, object]
     confidence: float
     evidence_refs: list[EvidenceRefOut]
+    # P6-T5's own Objective line names "rule text + citation" - the
+    # `Finding` row itself never denormalizes these (only `rule_key`/
+    # `rule_version`, since `rules` is append-only and shared, unlike a
+    # finding's own status/confidence), so they're resolved here from the
+    # exact `RuleRow` this finding was actually judged against
+    # (`Finding.rule_id`), not the rule_key's possibly-newer current version.
+    rule_title: str | None
+    rule_citation: str | None
 
 
 class EvidenceDetailOut(BaseModel):
@@ -86,6 +95,10 @@ def list_findings(
         edges = findings_service.get_finding_evidence(
             db, organization_id=principal.org_id, finding_id=row.id
         )
+        # `rules` is shared, unversioned-by-tenant content (see
+        # `app.rules.publish`'s own docstring) - a plain `db.get` by the
+        # exact pinned `rule_id`, no tenant scoping needed or applied.
+        rule_row = db.get(RuleRow, row.rule_id)
         out.append(
             FindingOut(
                 id=row.id,
@@ -104,6 +117,8 @@ def list_findings(
                     )
                     for e in edges
                 ],
+                rule_title=rule_row.title if rule_row else None,
+                rule_citation=rule_row.citation if rule_row else None,
             )
         )
     return out

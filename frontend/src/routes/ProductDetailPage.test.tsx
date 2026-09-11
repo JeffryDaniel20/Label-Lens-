@@ -113,4 +113,54 @@ describe("ProductDetailPage", () => {
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
   });
+
+  it("offers a compare link, ordered oldest-first, once two versions are selected", async () => {
+    useSessionMock.mockReturnValue({ data: { capabilities: ["product:view"] } });
+    useProductMock.mockReturnValue({
+      data: {
+        id: "p1",
+        name: "Masala Chips",
+        internal_sku: "MC-001",
+        category_hint: null,
+        market_codes: [],
+      },
+      isPending: false,
+      error: null,
+    });
+    useProductVersionsMock.mockReturnValue({
+      data: [
+        {
+          id: "v2",
+          product_id: "p1",
+          version_no: 2,
+          label: "Relaunch",
+          status: "draft",
+          locked_at: null,
+          superseded_at: null,
+          created_at: "2026-02-01T00:00:00Z",
+        },
+        {
+          id: "v1",
+          product_id: "p1",
+          version_no: 1,
+          label: "",
+          status: "superseded",
+          locked_at: null,
+          superseded_at: "2026-02-01T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    useCreateVersionMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+
+    renderPage();
+    const user = userEvent.setup();
+
+    expect(screen.queryByRole("link", { name: /Compare v1/ })).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Select v2 for comparison"));
+    await user.click(screen.getByLabelText("Select v1 for comparison"));
+
+    const compareLink = screen.getByRole("link", { name: "Compare v1 → v2" });
+    expect(compareLink).toHaveAttribute("href", "/products/p1/compare/v1/v2");
+  });
 });

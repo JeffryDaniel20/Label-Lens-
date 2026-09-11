@@ -14,6 +14,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { label: "Products", to: "/products", requires: "product:view" },
   { label: "Analyses", to: "/analyses", requires: "analysis:view" },
+  { label: "Review queue", to: "/review/queue", requires: "analysis:view" },
   { label: "Reports", to: "/reports", requires: "report:view" },
   { label: "Members", to: "/settings/members", requires: "member:view" },
   { label: "Audit log", to: "/audit", requires: "audit:view" },

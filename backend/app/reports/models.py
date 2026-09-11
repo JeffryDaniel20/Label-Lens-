@@ -48,9 +48,12 @@ class Report(UUIDPrimaryKey, TimestampMixin, Base):
     generated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow, nullable=False
     )
-    # `None` until P6's review/sign-off workflow exists to set it - a report
-    # can be generated before sign-off (a draft/working report), so this
-    # column is honestly nullable rather than assumed to always be set.
+    # Set by `app.reports.router.generate_report` (P6-T6) the moment a real
+    # `ReviewSignoff` exists for the analysis at generation time - "eligible
+    # for a final report" (IMPLEMENTATION.md §12) made concrete as "this
+    # specific report row is the final one." A report can still be
+    # generated before sign-off (a draft/working report), so this column
+    # stays honestly nullable rather than assumed to always be set.
     signed_off_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), default=None
     )

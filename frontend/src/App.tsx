@@ -7,7 +7,9 @@ import { PlaceholderPage } from "@/routes/PlaceholderPage";
 import { ProductDetailPage } from "@/routes/ProductDetailPage";
 import { ProductsPage } from "@/routes/ProductsPage";
 import { ProtectedRoute } from "@/routes/ProtectedRoute";
+import { ReviewQueuePage } from "@/routes/ReviewQueuePage";
 import { RootLayout } from "@/routes/RootLayout";
+import { VersionComparisonPage } from "@/routes/VersionComparisonPage";
 import { VersionDetailPage } from "@/routes/VersionDetailPage";
 
 const router = createBrowserRouter([
@@ -25,10 +27,15 @@ const router = createBrowserRouter([
       { path: "products/:productId", element: <ProductDetailPage /> },
       { path: "products/:productId/versions/:versionId", element: <VersionDetailPage /> },
       {
+        path: "products/:productId/compare/:fromVersionId/:toVersionId",
+        element: <VersionComparisonPage />,
+      },
+      {
         path: "products/:productId/versions/:versionId/analyses/:analysisId",
         element: <AnalysisDashboardPage />,
       },
       { path: "analyses", element: <PlaceholderPage title="Analyses" /> },
+      { path: "review/queue", element: <ReviewQueuePage /> },
       { path: "reports", element: <PlaceholderPage title="Reports" /> },
       { path: "settings/members", element: <PlaceholderPage title="Members" /> },
       { path: "audit", element: <PlaceholderPage title="Audit log" /> },

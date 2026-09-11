@@ -13,11 +13,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.analysis import service as analysis_service
+from app.audit.models import ActorType
 from app.identity.deps import Principal, get_db, require
 from app.identity.rbac import Capability
 from app.platform.config import Settings, get_settings
 from app.reports import service as reports_service
 from app.reports.models import Report
+from app.review import service as review_service
 from app.storage import service as storage_service
 from app.storage.client import ObjectStorageClient
 
@@ -34,6 +36,11 @@ class ReportOut(BaseModel):
     pdf_download_url: str | None
     pdf_download_expires_in: int | None
     snapshot: dict[str, object]
+    # P6-T6: set the moment a real `ReviewSignoff` exists for this analysis
+    # at generation time - "eligible for a final report" (IMPLEMENTATION.md
+    # §12) made concrete as "this report row is the final one," not a
+    # separate `kind`. `None` means an honest draft/working report.
+    signed_off_by: uuid.UUID | None
 
 
 def _storage_client(request: Request) -> ObjectStorageClient:
@@ -70,6 +77,7 @@ def _report_out(
         pdf_download_url=pdf_download_url,
         pdf_download_expires_in=pdf_download_expires_in,
         snapshot=report.snapshot,
+        signed_off_by=report.signed_off_by,
     )
 
 
@@ -86,8 +94,16 @@ def generate_report(
     )
     storage_client = _storage_client(request)
     snapshot = reports_service.build_snapshot(db, analysis=analysis, storage_client=storage_client)
+    signoff = review_service.get_signoff(
+        db, organization_id=principal.org_id, analysis_id=analysis.id
+    )
+    signed_off_by = signoff.actor_id if signoff and signoff.actor_type is ActorType.USER else None
     report = reports_service.persist_report(
-        db, analysis=analysis, snapshot=snapshot, generated_by=principal.actor_id
+        db,
+        analysis=analysis,
+        snapshot=snapshot,
+        generated_by=principal.actor_id,
+        signed_off_by=signed_off_by,
     )
     db.commit()
     return _report_out(

@@ -31,15 +31,20 @@ def _ts(name: str, **kw: object) -> sa.Column:
 
 
 def upgrade() -> None:
-    op.add_column(
-        "analyses",
-        sa.Column(
-            "parent_analysis_id",
-            sa.Uuid(),
-            sa.ForeignKey("analyses.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
+    # `batch_alter_table` rather than a plain `add_column`: SQLite cannot
+    # `ALTER TABLE ... ADD COLUMN` with a new foreign-key constraint in one
+    # step (it has no `ALTER` support for constraints at all - batch mode's
+    # copy-and-move strategy is the documented workaround); on PostgreSQL
+    # this still compiles to the same plain `ALTER TABLE ADD COLUMN`.
+    with op.batch_alter_table("analyses") as batch_op:
+        batch_op.add_column(sa.Column("parent_analysis_id", sa.Uuid(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_analyses_parent_analysis_id_analyses",
+            "analyses",
+            ["parent_analysis_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     op.create_table(
         "finding_decisions",
@@ -136,4 +141,6 @@ def downgrade() -> None:
             op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}")
     op.drop_table("field_corrections")
     op.drop_table("finding_decisions")
-    op.drop_column("analyses", "parent_analysis_id")
+    with op.batch_alter_table("analyses") as batch_op:
+        batch_op.drop_constraint("fk_analyses_parent_analysis_id_analyses", type_="foreignkey")
+        batch_op.drop_column("parent_analysis_id")

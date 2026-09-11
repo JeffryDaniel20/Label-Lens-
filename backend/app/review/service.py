@@ -1,19 +1,22 @@
-"""Review-workflow actions (P6-T5): deciding on a finding, and correcting an
-extracted field.
+"""Review-workflow actions: deciding on a finding and correcting an
+extracted field (P6-T5), plus the review queue and sign-off action that
+close the workflow out (P6-T6).
 
-Deliberately scoped to what IMPLEMENTATION.md §12 names for *this* task -
-Confirm, Override, Fix field, Escalate - not Comment (no acceptance-line
-test names it) and not sign-off (P6-T6's own task, "Review queue and
-sign-off," not this one's).
+P6-T5 was deliberately scoped to what IMPLEMENTATION.md §12 names for that
+task - Confirm, Override, Fix field, Escalate - not Comment (no
+acceptance-line test names it) and not sign-off, which is this file's own
+`sign_off_analysis` now.
 """
 
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import hashlib
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.models import Analysis, AnalysisEvent, AnalysisState
@@ -22,12 +25,13 @@ from app.audit.models import ActorType
 from app.extraction import facts as facts_schema
 from app.extraction.models import EvidenceSpan, ExtractedField, Extraction
 from app.findings.models import Finding
-from app.platform.errors import NotFound, ValidationFailed
+from app.platform.errors import Conflict, NotFound, ValidationFailed
 from app.review.models import (
     OVERRIDE_REASON_MIN_LENGTH,
     DecisionAction,
     FieldCorrection,
     FindingDecision,
+    ReviewSignoff,
 )
 
 # The `LabelFacts` (P3-T4) scalar text fields a reviewer can correct today -
@@ -54,10 +58,42 @@ CORRECTABLE_FIELDS: frozenset[str] = frozenset(
 # verified evidence to carry forward (see `create_field_correction`'s own
 # docstring for why) - reachable only from states where `rule_eval` has
 # actually run, i.e. every stopping state except an outright pipeline
-# failure (which never produced real findings to review to begin with).
-_CORRECTABLE_ANALYSIS_STATES: frozenset[AnalysisState] = frozenset(
+# failure (which never produced real findings to review to begin with). The
+# same set is exactly "the analysis has genuinely stopped and can be
+# reviewed at all," so `sign_off_analysis` (P6-T6) reuses it unchanged.
+_REVIEWABLE_ANALYSIS_STATES: frozenset[AnalysisState] = frozenset(
     {AnalysisState.NEEDS_REVIEW, AnalysisState.REVIEW, AnalysisState.COMPLETED}
 )
+
+# `needs_review`/`review` specifically - an analysis waiting on or actively
+# under human attention. `completed` has already finished being reviewed (or
+# never needed it), so it does not belong in a queue of open work.
+_QUEUE_STATES: frozenset[AnalysisState] = frozenset(
+    {AnalysisState.NEEDS_REVIEW, AnalysisState.REVIEW}
+)
+
+
+def _get_signoff(
+    db: Session, *, organization_id: uuid.UUID, analysis_id: uuid.UUID
+) -> ReviewSignoff | None:
+    return db.scalar(
+        select(ReviewSignoff).where(
+            ReviewSignoff.analysis_id == analysis_id,
+            ReviewSignoff.organization_id == organization_id,
+        )
+    )
+
+
+def _reject_if_signed_off(
+    db: Session, *, organization_id: uuid.UUID, analysis_id: uuid.UUID
+) -> None:
+    """The "signed-off analyses are read-only" half of P6-T6's acceptance
+    criterion, enforced at the one place both `record_finding_decision` and
+    `create_field_correction` already have to look an analysis up - a
+    signed-off analysis's own findings/fields never change again, so
+    neither should any further decision or correction against them."""
+    if _get_signoff(db, organization_id=organization_id, analysis_id=analysis_id) is not None:
+        raise Conflict("This analysis has already been signed off and is read-only.")
 
 
 def record_finding_decision(
@@ -83,6 +119,7 @@ def record_finding_decision(
     )
     if finding is None:
         raise NotFound("Finding not found.")
+    _reject_if_signed_off(db, organization_id=organization_id, analysis_id=finding.analysis_id)
 
     if action is DecisionAction.OVERRIDE:
         if reason is None or len(reason.strip()) < OVERRIDE_REASON_MIN_LENGTH:
@@ -164,10 +201,11 @@ def create_field_correction(
             f"{field_path!r} is not a correctable field. Correctable fields: "
             f"{sorted(CORRECTABLE_FIELDS)}."
         )
-    if analysis.state not in _CORRECTABLE_ANALYSIS_STATES:
+    if analysis.state not in _REVIEWABLE_ANALYSIS_STATES:
         raise ValidationFailed(
             f"Cannot correct a field on an analysis in state {analysis.state.value!r}."
         )
+    _reject_if_signed_off(db, organization_id=organization_id, analysis_id=analysis.id)
 
     extraction = db.scalar(
         select(Extraction)
@@ -317,3 +355,117 @@ def create_field_correction(
         advance_analysis(db, child)
 
     return correction, child
+
+
+def assign_reviewer(
+    db: Session, *, organization_id: uuid.UUID, analysis: Analysis, reviewer_id: uuid.UUID | None
+) -> Analysis:
+    """Sets (or clears, `reviewer_id=None`) who is working `analysis` -
+    a plain, mutable column (`Analysis.assigned_reviewer_id`), safe because
+    it can only ever be touched while `state` is non-terminal
+    (`reject_terminal_analysis_mutation()`, migration 0006, already enforces
+    that at the database level for every column on this row, this one
+    included)."""
+    analysis.assigned_reviewer_id = reviewer_id
+    db.add(analysis)
+    db.flush()
+    return analysis
+
+
+def list_review_queue(
+    db: Session, *, organization_id: uuid.UUID
+) -> list[tuple[Analysis, dt.datetime]]:
+    """Every analysis genuinely waiting on or under human review
+    (`needs_review`/`review` - `completed` has already been through it, or
+    never needed to), each paired with the real timestamp it *first*
+    entered that state - the SLA clock IMPLEMENTATION.md §12's queue view
+    needs, derived from `AnalysisEvent`'s own append-only history (the same
+    "state history is fully reconstructable from events" guarantee P5-T1
+    built), not a new column that could drift from what actually happened.
+    Oldest-waiting-first, so the queue itself surfaces what needs attention
+    soonest."""
+    analyses = db.scalars(
+        select(Analysis).where(
+            Analysis.organization_id == organization_id,
+            Analysis.state.in_(_QUEUE_STATES),
+        )
+    ).all()
+    if not analyses:
+        return []
+
+    entries: list[tuple[Analysis, dt.datetime]] = []
+    for analysis in analyses:
+        first_queued_at = db.scalar(
+            select(func.min(AnalysisEvent.occurred_at)).where(
+                AnalysisEvent.analysis_id == analysis.id,
+                AnalysisEvent.to_state.in_(_QUEUE_STATES),
+            )
+        )
+        # Defensive, not expected in practice: an analysis cannot legally
+        # reach `needs_review`/`review` without an event recording exactly
+        # that transition (`state_machine.transition` writes one atomically
+        # with every state change) - fall back to `started_at` rather than
+        # crash if this invariant is ever somehow violated.
+        entries.append((analysis, first_queued_at or analysis.started_at))
+    entries.sort(key=lambda entry: entry[1])
+    return entries
+
+
+def compute_finding_set_hash(findings: Sequence[Finding]) -> str:
+    """sha256 over the sorted `(rule_key, rule_version, status)` of every
+    finding - IMPLEMENTATION.md §12's own literal "a hash of the finding
+    set," independently re-computable later to confirm a signed-off
+    analysis's findings genuinely haven't changed since (they can't -
+    `findings` is append-only - but the hash makes that a checkable fact,
+    not just an architectural promise)."""
+    parts = sorted(f"{f.rule_key}:{f.rule_version}:{f.status.value}" for f in findings)
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def sign_off_analysis(
+    db: Session,
+    *,
+    organization_id: uuid.UUID,
+    analysis: Analysis,
+    actor_id: uuid.UUID | None,
+    actor_type: ActorType,
+    actor_label: str | None,
+) -> ReviewSignoff:
+    """Freezes the review (IMPLEMENTATION.md §12): once this returns, no
+    further `record_finding_decision`/`create_field_correction` call
+    against `analysis` will succeed (`_reject_if_signed_off`) - the literal
+    "signed-off analyses are read-only" acceptance criterion. Requires the
+    analysis to have actually reached a real reviewable stopping state
+    (the same `_REVIEWABLE_ANALYSIS_STATES` `create_field_correction`
+    checks) and to not already be signed off (the real, database-enforced
+    unique constraint on `ReviewSignoff.analysis_id` is the final backstop
+    against a race; this check is the fast, honest-error path for the
+    ordinary case)."""
+    if analysis.state not in _REVIEWABLE_ANALYSIS_STATES:
+        raise ValidationFailed(
+            f"Cannot sign off an analysis in state {analysis.state.value!r}."
+        )
+    if _get_signoff(db, organization_id=organization_id, analysis_id=analysis.id) is not None:
+        raise Conflict("This analysis has already been signed off.")
+
+    findings = db.scalars(
+        select(Finding).where(Finding.analysis_id == analysis.id)
+    ).all()
+    signoff = ReviewSignoff(
+        organization_id=organization_id,
+        analysis_id=analysis.id,
+        ruleset_version_id=analysis.ruleset_version_id,
+        finding_set_hash=compute_finding_set_hash(findings),
+        actor_id=actor_id,
+        actor_type=actor_type,
+        actor_label=actor_label,
+    )
+    db.add(signoff)
+    db.flush()
+    return signoff
+
+
+def get_signoff(
+    db: Session, *, organization_id: uuid.UUID, analysis_id: uuid.UUID
+) -> ReviewSignoff | None:
+    return _get_signoff(db, organization_id=organization_id, analysis_id=analysis_id)

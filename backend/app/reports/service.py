@@ -319,11 +319,18 @@ def persist_report(
     analysis: Analysis,
     snapshot: dict[str, Any],
     generated_by: uuid.UUID | None,
+    signed_off_by: uuid.UUID | None = None,
 ) -> Report:
     """Stamps the volatile cover fields onto an already-built `snapshot`
     (see `build_snapshot`) and writes it as a new, immutable `Report` row -
     never an update to an existing one, matching section 19's "self-
-    contained immutable snapshot"."""
+    contained immutable snapshot". `signed_off_by` (P6-T6): passed by the
+    caller when a real `ReviewSignoff` exists for `analysis` at generation
+    time - IMPLEMENTATION.md §12's "eligible for a final report" made
+    concrete as "this specific report row is the final one," not a
+    separate `kind` value; a report generated before sign-off leaves this
+    `None`, honestly a draft/working report, exactly as this column's own
+    docstring already said it could be."""
     snapshot = dict(snapshot)
     snapshot["cover"] = dict(snapshot["cover"])
     snapshot["cover"]["generated_at"] = utcnow().isoformat()
@@ -336,6 +343,7 @@ def persist_report(
         kind="json",
         snapshot=snapshot,
         sha256=snapshot["cover"]["report_hash"],
+        signed_off_by=signed_off_by,
     )
     db.add(row)
     db.flush()

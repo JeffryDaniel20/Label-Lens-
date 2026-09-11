@@ -17,6 +17,10 @@ const {
   useGenerateReportMock,
   useAnalysisSseMock,
   useSessionMock,
+  useAnalysisSignoffMock,
+  useSignOffAnalysisMock,
+  useDecideFindingMock,
+  useCorrectFieldMock,
 } = vi.hoisted(() => ({
   useProductMock: vi.fn(),
   useProductVersionMock: vi.fn(),
@@ -27,6 +31,10 @@ const {
   useGenerateReportMock: vi.fn(),
   useAnalysisSseMock: vi.fn(),
   useSessionMock: vi.fn(),
+  useAnalysisSignoffMock: vi.fn(),
+  useSignOffAnalysisMock: vi.fn(),
+  useDecideFindingMock: vi.fn(),
+  useCorrectFieldMock: vi.fn(),
 }));
 vi.mock("@/features/catalog/products", () => ({ useProduct: useProductMock }));
 vi.mock("@/features/catalog/versions", () => ({ useProductVersion: useProductVersionMock }));
@@ -38,6 +46,12 @@ vi.mock("@/features/analysis/analysis", () => ({
   useGenerateReport: useGenerateReportMock,
 }));
 vi.mock("@/features/analysis/useAnalysisSse", () => ({ useAnalysisSse: useAnalysisSseMock }));
+vi.mock("@/features/review/review", () => ({
+  useAnalysisSignoff: useAnalysisSignoffMock,
+  useSignOffAnalysis: useSignOffAnalysisMock,
+  useDecideFinding: useDecideFindingMock,
+  useCorrectField: useCorrectFieldMock,
+}));
 vi.mock("@/features/auth/session", () => ({ useSession: useSessionMock }));
 // The label viewer canvas (P6-T4) is its own dedicated suite
 // (`LabelViewer.test.tsx`) - stubbed here to a plain marker so this file
@@ -103,6 +117,10 @@ describe("AnalysisDashboardPage", () => {
     useSessionMock.mockReturnValue({
       data: { capabilities: ["analysis:view", "report:generate"] },
     });
+    useAnalysisSignoffMock.mockReturnValue({ data: null });
+    useSignOffAnalysisMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    useDecideFindingMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    useCorrectFieldMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
   });
 
   it("shows the current state, progress, and a live indicator while running", () => {
@@ -215,7 +233,85 @@ describe("AnalysisDashboardPage", () => {
 
     expect(screen.getByText("IN.FSSAI.NET_QUANTITY")).toBeInTheDocument();
     expect(screen.getByText("major")).toBeInTheDocument();
-    expect(screen.getByText("fail")).toBeInTheDocument();
+    // "fail" also appears as a status-filter button label now (P6-T5) - the
+    // status badge on the finding itself is the second match.
+    expect(screen.getAllByText("fail")).toHaveLength(2);
+  });
+
+  it("shows a sign-off button for a reviewer on an analysis awaiting review", () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useSessionMock.mockReturnValue({
+      data: { capabilities: ["analysis:view", "report:generate", "analysis:signoff"] },
+    });
+
+    renderPage();
+
+    expect(screen.getByRole("button", { name: "Sign off review" })).toBeInTheDocument();
+  });
+
+  it("hides the sign-off button from a viewer without analysis:signoff", () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+
+    renderPage();
+
+    expect(screen.queryByRole("button", { name: "Sign off review" })).not.toBeInTheDocument();
+    expect(screen.getByText("Awaiting reviewer sign-off.")).toBeInTheDocument();
+  });
+
+  it("shows a read-only badge and hides the sign-off button once signed off", () => {
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useSessionMock.mockReturnValue({
+      data: { capabilities: ["analysis:view", "report:generate", "analysis:signoff"] },
+    });
+    useAnalysisSignoffMock.mockReturnValue({
+      data: {
+        id: "s1",
+        analysis_id: "a1",
+        ruleset_version_id: null,
+        finding_set_hash: "abc",
+        signed_off_at: "2026-01-02T00:00:00Z",
+        actor_label: "reviewer@example.com",
+      },
+    });
+
+    renderPage();
+
+    expect(screen.getByText("Signed off · read-only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign off review" })).not.toBeInTheDocument();
+  });
+
+  it("calls the sign-off mutation when the button is clicked", async () => {
+    const mutate = vi.fn();
+    useAnalysisMock.mockReturnValue({
+      data: { ...RUNNING_ANALYSIS, state: "needs_review", confidence_tier: "low" },
+      isPending: false,
+      error: null,
+    });
+    useSessionMock.mockReturnValue({
+      data: { capabilities: ["analysis:view", "report:generate", "analysis:signoff"] },
+    });
+    useSignOffAnalysisMock.mockReturnValue({ mutate, isPending: false });
+
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign off review" }));
+
+    expect(mutate).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    );
   });
 
   it("selects a finding with evidence and passes it to the label viewer", async () => {

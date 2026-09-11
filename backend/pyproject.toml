@@ -58,8 +58,8 @@ ocr = [
     "paddlepaddle>=3.3",
 ]
 
-[tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

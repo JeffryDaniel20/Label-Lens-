@@ -247,8 +247,14 @@ severity)` on findings; GIN on `extractions.payload`, `rules.applicability`; GiS
 | GET | `/v1/analyses/{id}/findings` | any | Viewer+ | filter by status/severity; embeds evidence refs |
 | GET | `/v1/findings/{id}/evidence` | any | Viewer+ | spans + page ids + bboxes + signed page URLs |
 | GET | `/v1/analyses/{id}/events` | any | Viewer+ | SSE progress stream |
-| POST | `/v1/findings/{id}/decision` | any | Reviewer+ | accept / override (`reason` required) |
+| POST | `/v1/findings/{id}/decision` | any | Reviewer+ | confirm / override (`reason` required, min 20 chars) / escalate |
+| GET | `/v1/findings/{id}/decisions` | any | Viewer+ | decision history for one finding, newest first |
+| POST | `/v1/analyses/{id}/corrections` | any | Reviewer+ | fix field: corrects one value, creates a rule-evaluated child analysis |
+| GET | `/v1/review/queue` | any | Viewer+ | analyses awaiting/in review, oldest-waiting-first, each with its SLA-clock start |
+| PATCH | `/v1/analyses/{id}/assignment` | any | Reviewer+ | sets or clears the reviewer working an analysis |
 | POST | `/v1/analyses/{id}/signoff` | any | Reviewer+ | freezes review, allows final report |
+| GET | `/v1/analyses/{id}/signoff` | any | Viewer+ | signoff record if one exists, else `null` |
+| GET | `/v1/product-versions/{from_id}/compare/{to_id}` | any | Viewer+ | field + finding diff between two versions of the same product, `?common_ruleset=` toggle |
 | POST | `/v1/analyses/{id}/reports` | any | Viewer+ | generate report (async) |
 | GET | `/v1/reports/{id}` | any | Viewer+ | metadata + short-lived signed PDF URL |
 | GET | `/v1/rulesets` | any | Viewer+ | versions, effective dates, enabled state |

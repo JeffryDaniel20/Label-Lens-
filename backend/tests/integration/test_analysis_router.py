@@ -285,3 +285,103 @@ class TestCancelAnalysis:
         viewer = ApiSession(owner.client, "viewer@acmefoods.com", "CorrectHorse42!")
         response = viewer.post(f"/v1/analyses/{analysis_id}/cancel")
         assert response.status_code == 403
+
+
+class TestCompareVersions:
+    """P6-T7's version comparison endpoint - real causal logic against a
+    real pipeline is `test_version_comparison.py`'s own job; this file
+    covers the HTTP contract (auth, RBAC, tenancy, the same-product
+    guard) the same way every other endpoint suite here does."""
+
+    def test_requires_authentication(self, client) -> None:
+        response = client.get(
+            f"/v1/product-versions/{uuid.uuid4()}/compare/{uuid.uuid4()}"
+        )
+        assert response.status_code == 401
+
+    def test_a_foreign_version_404s(self, owner: ApiSession, version_with_file: str) -> None:
+        response = owner.get(
+            f"/v1/product-versions/{version_with_file}/compare/{uuid.uuid4()}"
+        )
+        assert response.status_code == 404
+
+    def test_versions_from_different_products_are_rejected(self, owner: ApiSession) -> None:
+        product_a = owner.post(
+            "/v1/products", json={"name": "P A", "internal_sku": "SA"}
+        ).json()["id"]
+        version_a = owner.post(f"/v1/products/{product_a}/versions", json={}).json()["id"]
+        product_b = owner.post(
+            "/v1/products", json={"name": "P B", "internal_sku": "SB"}
+        ).json()["id"]
+        version_b = owner.post(f"/v1/products/{product_b}/versions", json={}).json()["id"]
+
+        response = owner.get(f"/v1/product-versions/{version_a}/compare/{version_b}")
+        assert response.status_code == 400
+
+    def test_two_never_analyzed_versions_of_the_same_product_compare_honestly_empty(
+        self, owner: ApiSession
+    ) -> None:
+        product_id = owner.post(
+            "/v1/products", json={"name": "P", "internal_sku": "S1"}
+        ).json()["id"]
+        version_1 = owner.post(f"/v1/products/{product_id}/versions", json={}).json()["id"]
+        version_2 = owner.post(f"/v1/products/{product_id}/versions", json={}).json()["id"]
+
+        response = owner.get(f"/v1/product-versions/{version_1}/compare/{version_2}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["from_version_id"] == version_1
+        assert body["to_version_id"] == version_2
+        assert body["from_analysis_id"] is None
+        assert body["to_analysis_id"] is None
+        assert body["ruleset_changed"] is False
+        assert body["field_diffs"] == []
+        assert body["finding_diffs"] == []
+
+    def test_viewer_role_can_compare(self, owner: ApiSession) -> None:
+        product_id = owner.post(
+            "/v1/products", json={"name": "P", "internal_sku": "S1"}
+        ).json()["id"]
+        version_1 = owner.post(f"/v1/products/{product_id}/versions", json={}).json()["id"]
+        version_2 = owner.post(f"/v1/products/{product_id}/versions", json={}).json()["id"]
+        owner.post(
+            "/v1/members",
+            json={
+                "email": "viewer2@acmefoods.com",
+                "role": "viewer",
+                "password": "CorrectHorse42!",
+            },
+        )
+        viewer = ApiSession(owner.client, "viewer2@acmefoods.com", "CorrectHorse42!")
+
+        response = viewer.get(f"/v1/product-versions/{version_1}/compare/{version_2}")
+        assert response.status_code == 200
+
+    def test_a_foreign_organizations_version_404s_not_403(self, client) -> None:
+        client.post(
+            "/v1/auth/signup",
+            json={
+                "organization_name": "Foreign Org",
+                "email": "foreign@example.com",
+                "password": "CorrectHorse42!",
+            },
+        )
+        foreign = ApiSession(client, "foreign@example.com", "CorrectHorse42!")
+        foreign_product = foreign.post(
+            "/v1/products", json={"name": "P", "internal_sku": "S1"}
+        ).json()["id"]
+        foreign_version = foreign.post(
+            f"/v1/products/{foreign_product}/versions", json={}
+        ).json()["id"]
+
+        client.post("/v1/auth/signup", json=SIGNUP)
+        owner = ApiSession(client, SIGNUP["email"], SIGNUP["password"])
+        own_product = owner.post(
+            "/v1/products", json={"name": "P2", "internal_sku": "S2"}
+        ).json()["id"]
+        own_version = owner.post(
+            f"/v1/products/{own_product}/versions", json={}
+        ).json()["id"]
+
+        response = owner.get(f"/v1/product-versions/{own_version}/compare/{foreign_version}")
+        assert response.status_code == 404

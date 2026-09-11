@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.analysis import dlq, service, sse
+from app.analysis import comparison, dlq, service, sse
 from app.analysis.models import Analysis, AnalysisState, ConfidenceTier, DeadLetterReason
 from app.analysis.stages import progress_percentage
 from app.analysis.state_machine import transition
@@ -28,6 +28,7 @@ from app.audit.models import AuditAction
 from app.catalog import service as catalog_service
 from app.identity.deps import Principal, get_db, require
 from app.identity.rbac import Capability
+from app.platform.errors import ValidationFailed
 
 router = APIRouter(prefix="/v1", tags=["analysis"])
 
@@ -46,6 +47,10 @@ class AnalysisOut(BaseModel):
     total_tokens_in: int
     total_tokens_out: int
     total_cost_cents: int
+    # P6-T6: who is working this analysis, if anyone (mutable while the
+    # analysis is non-terminal, frozen once it isn't - see
+    # `Analysis.assigned_reviewer_id`'s own docstring).
+    assigned_reviewer_id: uuid.UUID | None
 
     @classmethod
     def from_analysis(cls, analysis: Analysis) -> AnalysisOut:
@@ -62,6 +67,7 @@ class AnalysisOut(BaseModel):
             total_tokens_in=analysis.total_tokens_in,
             total_tokens_out=analysis.total_tokens_out,
             total_cost_cents=analysis.total_cost_cents,
+            assigned_reviewer_id=analysis.assigned_reviewer_id,
         )
 
 
@@ -257,3 +263,109 @@ def cancel_analysis(
         ip=_ip(request),
     )
     return AnalysisOut.from_analysis(analysis)
+
+
+class FieldDiffOut(BaseModel):
+    field_path: str
+    from_value: object | None
+    to_value: object | None
+    change: comparison.ChangeKind
+
+
+class FindingDiffOut(BaseModel):
+    rule_key: str
+    rule_title: str | None
+    from_status: str | None
+    to_status: str | None
+    from_severity: str | None
+    to_severity: str | None
+    change: comparison.ChangeKind
+    cause: comparison.FindingCause
+
+
+class VersionComparisonOut(BaseModel):
+    from_version_id: uuid.UUID
+    to_version_id: uuid.UUID
+    from_analysis_id: uuid.UUID | None
+    to_analysis_id: uuid.UUID | None
+    from_ruleset_version_id: uuid.UUID | None
+    to_ruleset_version_id: uuid.UUID | None
+    # Whether the caller asked for (and got) both sides re-evaluated against
+    # one identical ruleset - `False` whenever the "to" side has never had
+    # rules run at all, since there is then nothing to re-evaluate against.
+    common_ruleset_applied: bool
+    # Whether the two analyses were actually pinned to different
+    # `ruleset_version_id`s in the first place - true even with the toggle
+    # off, so a caller can tell "a rule change is possible here" before
+    # asking for the recompute.
+    ruleset_changed: bool
+    field_diffs: list[FieldDiffOut]
+    finding_diffs: list[FindingDiffOut]
+
+
+@router.get(
+    "/product-versions/{from_version_id}/compare/{to_version_id}",
+    response_model=VersionComparisonOut,
+)
+def compare_versions(
+    from_version_id: uuid.UUID,
+    to_version_id: uuid.UUID,
+    common_ruleset: bool = False,
+    principal: Principal = Depends(require(Capability.ANALYSIS_VIEW)),
+    db: Session = Depends(get_db),
+) -> VersionComparisonOut:
+    """P6-T7: side-by-side field and finding diff between two versions of
+    the SAME product, each represented by its own latest analysis (404s
+    happen through `catalog_service.get_version`'s own tenant scoping before
+    either version's product is even inspected, so a foreign version never
+    confirms its own existence)."""
+    from_version = catalog_service.get_version(
+        db, org_id=principal.org_id, version_id=from_version_id
+    )
+    to_version = catalog_service.get_version(
+        db, org_id=principal.org_id, version_id=to_version_id
+    )
+    if from_version.product_id != to_version.product_id:
+        raise ValidationFailed("Both versions must belong to the same product.")
+
+    from_analysis = service.get_latest_analysis_for_version(
+        db, organization_id=principal.org_id, version_id=from_version_id
+    )
+    to_analysis = service.get_latest_analysis_for_version(
+        db, organization_id=principal.org_id, version_id=to_version_id
+    )
+    result = comparison.compare_analyses(
+        db, from_analysis=from_analysis, to_analysis=to_analysis, common_ruleset=common_ruleset
+    )
+    return VersionComparisonOut(
+        from_version_id=from_version_id,
+        to_version_id=to_version_id,
+        from_analysis_id=result.from_analysis_id,
+        to_analysis_id=result.to_analysis_id,
+        from_ruleset_version_id=result.from_ruleset_version_id,
+        to_ruleset_version_id=result.to_ruleset_version_id,
+        common_ruleset_applied=result.common_ruleset_applied,
+        ruleset_changed=result.ruleset_changed,
+        field_diffs=[
+            FieldDiffOut(
+                field_path=d.field_path,
+                from_value=d.from_value,
+                to_value=d.to_value,
+                change=d.change,
+            )
+            for d in result.field_diffs
+        ],
+        finding_diffs=[
+            FindingDiffOut(
+                rule_key=d.rule_key,
+                rule_title=d.rule_title,
+                from_status=d.from_status,
+                to_status=d.to_status,
+                from_severity=d.from_severity,
+                to_severity=d.to_severity,
+                change=d.change,
+                cause=d.cause,
+            )
+            for d in result.finding_diffs
+        ],
+    )

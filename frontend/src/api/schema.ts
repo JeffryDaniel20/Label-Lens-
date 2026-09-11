@@ -487,6 +487,30 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/product-versions/{from_version_id}/compare/{to_version_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Compare Versions
+     * @description P6-T7: side-by-side field and finding diff between two versions of
+     *     the SAME product, each represented by its own latest analysis (404s
+     *     happen through `catalog_service.get_version`'s own tenant scoping before
+     *     either version's product is even inspected, so a foreign version never
+     *     confirms its own existence).
+     */
+    get: operations["compare_versions_v1_product_versions__from_version_id__compare__to_version_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/analyses/{analysis_id}/findings": {
     parameters: {
       query?: never;
@@ -581,6 +605,109 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/findings/{finding_id}/decision": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Decide Finding */
+    post: operations["decide_finding_v1_findings__finding_id__decision_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/findings/{finding_id}/decisions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Decisions */
+    get: operations["list_decisions_v1_findings__finding_id__decisions_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/analyses/{analysis_id}/corrections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Correct Field */
+    post: operations["correct_field_v1_analyses__analysis_id__corrections_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/review/queue": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Review Queue */
+    get: operations["get_review_queue_v1_review_queue_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/analyses/{analysis_id}/assignment": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Assign Reviewer */
+    patch: operations["assign_reviewer_v1_analyses__analysis_id__assignment_patch"];
+    trace?: never;
+  };
+  "/v1/analyses/{analysis_id}/signoff": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Signoff */
+    get: operations["get_signoff_v1_analyses__analysis_id__signoff_get"];
+    put?: never;
+    /** Sign Off Analysis */
+    post: operations["sign_off_analysis_v1_analyses__analysis_id__signoff_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -618,6 +745,8 @@ export interface components {
       total_tokens_out: number;
       /** Total Cost Cents */
       total_cost_cents: number;
+      /** Assigned Reviewer Id */
+      assigned_reviewer_id: string | null;
     };
     /**
      * AnalysisState
@@ -673,6 +802,11 @@ export interface components {
       last_used_at: string | null;
       /** Revoked At */
       revoked_at: string | null;
+    };
+    /** AssignReviewerRequest */
+    AssignReviewerRequest: {
+      /** Reviewer Id */
+      reviewer_id?: string | null;
     };
     /** AuditLogOut */
     AuditLogOut: {
@@ -754,6 +888,11 @@ export interface components {
      * @enum {string}
      */
     DeadLetterReason: "stage_exhausted" | "permanent_error" | "timeout" | "stalled";
+    /**
+     * DecisionAction
+     * @enum {string}
+     */
+    DecisionAction: "confirm" | "override" | "escalate";
     /** DownloadResponse */
     DownloadResponse: {
       /** Url */
@@ -805,6 +944,63 @@ export interface components {
        * Format: uuid
        */
       evidence_span_id: string;
+    };
+    /** FieldCorrectionOut */
+    FieldCorrectionOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Analysis Id
+       * Format: uuid
+       */
+      analysis_id: string;
+      /**
+       * Child Analysis Id
+       * Format: uuid
+       */
+      child_analysis_id: string;
+      /** Field Path */
+      field_path: string;
+      /** Original Value */
+      original_value: string | null;
+      /** Corrected Value */
+      corrected_value: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+    };
+    /** FieldCorrectionRequest */
+    FieldCorrectionRequest: {
+      /** Field Path */
+      field_path: string;
+      /** Corrected Value */
+      corrected_value: string;
+      /** Reason */
+      reason?: string | null;
+    };
+    /** FieldCorrectionResponse */
+    FieldCorrectionResponse: {
+      correction: components["schemas"]["FieldCorrectionOut"];
+      child_analysis: components["schemas"]["AnalysisOut"];
+    };
+    /** FieldDiffOut */
+    FieldDiffOut: {
+      /** Field Path */
+      field_path: string;
+      /** From Value */
+      from_value: unknown | null;
+      /** To Value */
+      to_value: unknown | null;
+      /**
+       * Change
+       * @enum {string}
+       */
+      change: "added" | "removed" | "changed" | "unchanged";
     };
     /** FileOut */
     FileOut: {
@@ -862,6 +1058,65 @@ export interface components {
      * @enum {string}
      */
     FileStatus: "uploading" | "validating" | "ready" | "rejected";
+    /** FindingDecisionOut */
+    FindingDecisionOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Finding Id
+       * Format: uuid
+       */
+      finding_id: string;
+      /**
+       * Analysis Id
+       * Format: uuid
+       */
+      analysis_id: string;
+      action: components["schemas"]["DecisionAction"];
+      /** Reason */
+      reason: string | null;
+      /** Actor Label */
+      actor_label: string | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+    };
+    /** FindingDecisionRequest */
+    FindingDecisionRequest: {
+      action: components["schemas"]["DecisionAction"];
+      /** Reason */
+      reason?: string | null;
+    };
+    /** FindingDiffOut */
+    FindingDiffOut: {
+      /** Rule Key */
+      rule_key: string;
+      /** Rule Title */
+      rule_title: string | null;
+      /** From Status */
+      from_status: string | null;
+      /** To Status */
+      to_status: string | null;
+      /** From Severity */
+      from_severity: string | null;
+      /** To Severity */
+      to_severity: string | null;
+      /**
+       * Change
+       * @enum {string}
+       */
+      change: "added" | "removed" | "changed" | "unchanged";
+      /**
+       * Cause
+       * @enum {string}
+       */
+      cause: "label_change" | "rule_change" | "extraction_change" | "unchanged";
+    };
     /** FindingOut */
     FindingOut: {
       /**
@@ -890,6 +1145,10 @@ export interface components {
       confidence: number;
       /** Evidence Refs */
       evidence_refs: components["schemas"]["EvidenceRefOut"][];
+      /** Rule Title */
+      rule_title: string | null;
+      /** Rule Citation */
+      rule_citation: string | null;
     };
     /**
      * FindingStatus
@@ -1131,6 +1390,17 @@ export interface components {
       snapshot: {
         [key: string]: unknown;
       };
+      /** Signed Off By */
+      signed_off_by: string | null;
+    };
+    /** ReviewQueueEntryOut */
+    ReviewQueueEntryOut: {
+      analysis: components["schemas"]["AnalysisOut"];
+      /**
+       * Sla Since
+       * Format: date-time
+       */
+      sla_since: string;
     };
     /**
      * Role
@@ -1142,6 +1412,30 @@ export interface components {
      * @enum {string}
      */
     Severity: "critical" | "major" | "minor" | "advisory";
+    /** SignoffOut */
+    SignoffOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Analysis Id
+       * Format: uuid
+       */
+      analysis_id: string;
+      /** Ruleset Version Id */
+      ruleset_version_id: string | null;
+      /** Finding Set Hash */
+      finding_set_hash: string;
+      /**
+       * Signed Off At
+       * Format: date-time
+       */
+      signed_off_at: string;
+      /** Actor Label */
+      actor_label: string | null;
+    };
     /**
      * SignupRequest
      * @description Bootstraps a new organization together with its Owner.
@@ -1195,6 +1489,35 @@ export interface components {
       input?: unknown;
       /** Context */
       ctx?: Record<string, never>;
+    };
+    /** VersionComparisonOut */
+    VersionComparisonOut: {
+      /**
+       * From Version Id
+       * Format: uuid
+       */
+      from_version_id: string;
+      /**
+       * To Version Id
+       * Format: uuid
+       */
+      to_version_id: string;
+      /** From Analysis Id */
+      from_analysis_id: string | null;
+      /** To Analysis Id */
+      to_analysis_id: string | null;
+      /** From Ruleset Version Id */
+      from_ruleset_version_id: string | null;
+      /** To Ruleset Version Id */
+      to_ruleset_version_id: string | null;
+      /** Common Ruleset Applied */
+      common_ruleset_applied: boolean;
+      /** Ruleset Changed */
+      ruleset_changed: boolean;
+      /** Field Diffs */
+      field_diffs: components["schemas"]["FieldDiffOut"][];
+      /** Finding Diffs */
+      finding_diffs: components["schemas"]["FindingDiffOut"][];
     };
     /** VersionCreateRequest */
     VersionCreateRequest: {
@@ -2251,6 +2574,40 @@ export interface operations {
       };
     };
   };
+  compare_versions_v1_product_versions__from_version_id__compare__to_version_id__get: {
+    parameters: {
+      query?: {
+        common_ruleset?: boolean;
+      };
+      header?: never;
+      path: {
+        from_version_id: string;
+        to_version_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VersionComparisonOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   list_findings_v1_analyses__analysis_id__findings_get: {
     parameters: {
       query?: {
@@ -2427,6 +2784,224 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ReportOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  decide_finding_v1_findings__finding_id__decision_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        finding_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["FindingDecisionRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FindingDecisionOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_decisions_v1_findings__finding_id__decisions_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        finding_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FindingDecisionOut"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  correct_field_v1_analyses__analysis_id__corrections_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        analysis_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["FieldCorrectionRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FieldCorrectionResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_review_queue_v1_review_queue_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReviewQueueEntryOut"][];
+        };
+      };
+    };
+  };
+  assign_reviewer_v1_analyses__analysis_id__assignment_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        analysis_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssignReviewerRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AnalysisOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_signoff_v1_analyses__analysis_id__signoff_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        analysis_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SignoffOut"] | null;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  sign_off_analysis_v1_analyses__analysis_id__signoff_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        analysis_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SignoffOut"];
         };
       };
       /** @description Validation Error */
