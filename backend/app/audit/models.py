@@ -50,6 +50,14 @@ class AuditAction(enum.StrEnum):
     FIELD_CORRECTED = "field.corrected"
     ANALYSIS_ASSIGNED = "analysis.assigned"
     ANALYSIS_SIGNED_OFF = "analysis.signed_off"
+    FILE_PURGED = "file.purged"
+    ORG_DELETE_REQUESTED = "org.delete_requested"
+    ORG_RESTORED = "org.restored"
+    ORG_PURGED = "org.purged"
+    PRODUCT_DELETE_REQUESTED = "product.delete_requested"
+    PRODUCT_RESTORED = "product.restored"
+    PRODUCT_PURGED = "product.purged"
+    DATA_EXPORTED = "data.exported"
 
 
 class AuditLog(UUIDPrimaryKey, Base):

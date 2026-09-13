@@ -520,6 +520,27 @@ X-Content-Type-Options, Referrer-Policy), dependency scanning, `pip-audit`/`npm 
 - **PII:** label images may contain manufacturer addresses and contact details — treated as personal
   data; DSR (access/export/delete) procedure documented.
 
+**P7-T8 implementation note (2026-09-13):** all three bullets above are real, in
+`app/retention/`. `purge_expired_files` deletes only the object-storage bytes behind a `File`/
+`FilePage` past its org's `retention_days` (a `purged_at` marker distinguishes "still has its
+object" from "deliberately purged" without deleting the row) — findings, evidence spans
+(`text_snippet` is plain text, never an image) and reports are untouched by construction, since
+they were already fully assembled before any purge runs; a dedup-aware reference check skips an
+object another, still-live file still points at (`File`'s own content-addressed dedup, §11).
+Two-phase deletion reuses the `deleted_at` column `Organization`/`Product` already carried:
+`DELETE /v1/organizations/{id}` and `DELETE /v1/products/{id}` set it (phase one, a 30-day restore
+window via the matching `.../restore` endpoint); the hard purge (phase two,
+`purge_deleted_organizations`/`purge_deleted_products`, run nightly via
+`scripts/purge_retention.py` — never an HTTP action) deletes every real object-storage key first,
+writes one audit entry per resource, and only then deletes the row, which cascades every
+tenant-owned child row away — `audit_logs.organization_id` is `ON DELETE SET NULL`, so that one
+audit entry outlives the organization it describes, literally "retaining the fact of deletion."
+`GET /v1/me/export` is the DSR access/export endpoint, scoped to the caller's own account within
+their current organization (profile, membership, and their own audit-trail entries) — see
+`app/retention/service.py`'s own module docstring for why a cross-org export is out of scope: this
+codebase's whole request model (`Principal`) is bound to exactly one org per request, and nothing
+else here reads a user's data across tenants either.
+
 ---
 
 ## 17. Frontend Architecture

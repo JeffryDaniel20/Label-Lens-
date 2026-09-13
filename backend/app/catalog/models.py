@@ -142,6 +142,11 @@ class File(UUIDPrimaryKey, TimestampMixin, Base):
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
+    # P7-T8 retention purge: set once the underlying object-storage bytes are
+    # deleted. The row itself (and every downstream finding/evidence/report)
+    # is deliberately kept - only the source image is gone (IMPLEMENTATION.md
+    # 16's "the snippet remains; the image link 404s gracefully").
+    purged_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class FilePage(UUIDPrimaryKey, TimestampMixin, Base):
@@ -169,3 +174,4 @@ class FilePage(UUIDPrimaryKey, TimestampMixin, Base):
     width: Mapped[int] = mapped_column(Integer, nullable=False)
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     render_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    purged_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)

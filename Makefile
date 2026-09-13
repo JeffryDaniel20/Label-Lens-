@@ -5,7 +5,7 @@ PY := backend/.venv/bin/python
 endif
 
 .PHONY: install test lint typecheck check migrate up down cov backup restore new-rule eval \
-	adversarial \
+	adversarial retention-purge \
 	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
 install: frontend-install
@@ -51,6 +51,11 @@ adversarial:
 
 migrate:
 	cd backend && ../$(PY) -m alembic upgrade head
+
+# P7-T8: nightly retention purge + two-phase deletion hard purge, against
+# the real configured database and object store. See scripts/purge_retention.py.
+retention-purge:
+	cd backend && ../$(PY) scripts/purge_retention.py
 
 # See docs/rules-authoring.md. e.g.:
 #   make new-rule PACK=app/rulesets/in-fssai-food/v1.0.0 KEY=IN-FSSAI-FOOD-X \
