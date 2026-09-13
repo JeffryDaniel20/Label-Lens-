@@ -1,0 +1,41 @@
+name: Nightly eval
+
+on:
+  schedule:
+    # 03:00 UTC daily - P7-T3's own acceptance line: "nightly CI runs a
+    # subset." The full dataset also runs on every push to main so a
+    # regression is caught immediately, not held for the next scheduled run.
+    - cron: "0 3 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      LABELLENS_ENVIRONMENT: test
+      LABELLENS_SECRET_KEY: ci-secret-key-that-is-long-enough-0123456789
+      LABELLENS_DATABASE_URL: sqlite://
+      LABELLENS_REDIS_URL: memory://
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - name: Run eval (nightly subset; full dataset on push to main)
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python -m evals.cli --subset 3 --out-dir evals/reports/ci
+          else
+            python -m evals.cli --out-dir evals/reports/ci
+          fi
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: backend/evals/reports/ci/

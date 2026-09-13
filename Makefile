@@ -4,7 +4,7 @@ ifeq ($(wildcard $(PY)),)
 PY := backend/.venv/bin/python
 endif
 
-.PHONY: install test lint typecheck check migrate up down cov backup restore new-rule \
+.PHONY: install test lint typecheck check migrate up down cov backup restore new-rule eval \
 	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
 install: frontend-install
@@ -67,3 +67,11 @@ backup:
 
 restore:
 	bash infra/scripts/restore_db.sh $(DUMP)
+
+# See evals/dataset.py's own module docstring for this golden dataset's
+# honestly-stated scope. Writes a versioned JSON + HTML report under
+# backend/evals/reports/<timestamp>/ (gitignored - a run artifact, not
+# something to commit). Pass SUBSET=N for the smaller nightly-CI run, e.g.
+# `make eval SUBSET=2`.
+eval:
+	cd backend && ../$(PY) -m evals.cli $(if $(SUBSET),--subset $(SUBSET),)

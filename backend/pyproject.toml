@@ -96,7 +96,7 @@ python_version = "3.12"
 warn_unused_ignores = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
-files = ["app"]
+files = ["app", "evals"]
 
 [[tool.mypy.overrides]]
 module = "app.identity.*"
