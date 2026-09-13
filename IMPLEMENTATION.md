@@ -308,6 +308,14 @@ Errors used consistently: `400 validation_error`, `401 unauthenticated`, `403 fo
 | Medium | any field 0.70–0.90 | "verify" queue, findings marked provisional |
 | Low | any field < 0.70, or extraction/OCR failure, or conflicting duplicates | **mandatory** human review; no verdict published |
 
+"Conflicting duplicates" is implemented by `app/extraction/conflicts.py` (P7-T4) as **conflicting
+citations**: a field whose own cited OCR tokens canonicalize to two different values under that
+field's normalizer. The broader "the same declaration printed twice with different values somewhere
+on the packet" case is deliberately not detected — distinguishing a second net-quantity declaration
+from a serving size needs label-region semantics this system does not have, and a heuristic that
+flags every serving size as a conflict would be worse than none. That case belongs to a
+jurisdiction rule or to a richer extraction schema, not to the confidence layer.
+
 ---
 
 ## 9. Compliance Rule Engine
@@ -656,6 +664,17 @@ CI fails on: any security-suite failure, any rule fixture failure, coverage regr
 | File attacks | polyglot JPEG/PDF, zip bomb PDF, 10k-page PDF, EXIF payload, SVG disguised as PNG, malformed headers | rejected at ingestion with a clear error |
 | Tenancy | every endpoint with a foreign id; storage key guessing; report URL replay after expiry | 404 / denied, audited |
 | Load/abuse | 200-file upload burst, repeated identical submissions, oversized fields | quotas, idempotency dedup, 429s |
+
+Implemented as `backend/tests/security/adversarial/` (P7-T4), one module per family, with the
+injection corpus as versioned data at `corpus/injection.json` (shared with the prompt unit tests so
+there is one corpus, not two). `test_family_coverage.py` maps every family above to the test classes
+that assert it and fails if one loses its coverage. Required CI check; `make adversarial` runs it.
+
+Two rows are honestly partial, each recorded in TESTTEST.md rather than asserted as working:
+**Conflict** gets mandatory review but no conflicting-evidence *finding* (findings are the rule
+engine's output alone — see § 8), and **Multilingual** extracts every declared language but cannot
+evidence-verify a multi-value list, so a bilingual declaration is demoted to `insufficient_data`
+(the safe direction) until per-item `ExtractedField` rows exist.
 
 ---
 

@@ -14,6 +14,12 @@ read them back into the final tier before this.
     Low    | any field < 0.70, or extraction/OCR failure,
              or conflicting duplicates                      | mandatory review
 
+"conflicting duplicates" became real in P7-T4 (it was documentation-only
+here for four phases): `app.extraction.conflicts` detects a field whose own
+cited OCR tokens disagree under that field's real normalizer, and this
+module forces it to Low. See that module for exactly which conflict shape
+is detected and which is deliberately not.
+
 Field confidence is `min(ocr_conf, extraction_conf)` "adjusted by the
 verification gate" (§14): a field that P3-T6 demoted (`verified is False`)
 or that was never found on the label at all (`value_raw is None`) cannot
@@ -76,6 +82,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.models import Analysis, ConfidenceTier
+from app.extraction import conflicts
 from app.extraction.models import ExtractedField, Extraction
 from app.findings.models import Finding
 from app.rules.evaluator import FindingStatus
@@ -121,6 +128,17 @@ class FieldTier:
 class AnalysisTierResult:
     tier: ConfidenceTier
     fields: tuple[FieldTier, ...]
+
+
+def _cited_token_texts(db: Session, token_ids: list[str]) -> list[str]:
+    """Every cited token's own text, for `app.extraction.conflicts` to
+    canonicalize - see that module for why a field's citations disagreeing
+    with each other is the one conflict shape this system can detect
+    without false positives."""
+    if not token_ids:
+        return []
+    ids = [uuid.UUID(t) for t in token_ids]
+    return list(db.scalars(select(OcrTokenRow.text).where(OcrTokenRow.id.in_(ids))).all())
 
 
 def _cited_token_confidence(db: Session, token_ids: list[str]) -> float:
@@ -267,6 +285,26 @@ def compute_analysis_tier(
                     confidence=0.0,
                     tier=ConfidenceTier.LOW,
                     reason="field failed evidence verification",
+                )
+            )
+            continue
+
+        # "or conflicting duplicates -> mandatory review" (§14's routing
+        # table, this module's own docstring) - real as of P7-T4, not just
+        # documented. Checked before the numeric bands, exactly like the
+        # not-found/failed-verification forcings above: a field whose own
+        # citations disagree is untrustworthy no matter how confidently
+        # either token was read.
+        conflict = conflicts.find_conflicting_citation(
+            row.field_path, _cited_token_texts(db, row.cited_token_ids)
+        )
+        if conflict is not None:
+            fields.append(
+                FieldTier(
+                    field_path=row.field_path,
+                    confidence=0.0,
+                    tier=ConfidenceTier.LOW,
+                    reason=f"conflicting duplicate values on the label ({conflict})",
                 )
             )
             continue

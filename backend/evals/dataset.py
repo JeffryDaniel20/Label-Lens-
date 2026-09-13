@@ -58,6 +58,12 @@ class OcrTokenFixture:
     x2: float
     y2: float
     line_no: int
+    # What the OCR engine reported for this token. Optional in the manifest
+    # (defaulting to a clean read) because the golden dataset's own cases
+    # are all cleanly-read text; the adversarial suite's image-quality
+    # family (P7-T4) sets it low, which is exactly what a degraded
+    # photograph really produces.
+    confidence: float = 0.9
 
 
 @dataclass(frozen=True, slots=True)

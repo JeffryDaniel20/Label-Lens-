@@ -5,6 +5,7 @@ PY := backend/.venv/bin/python
 endif
 
 .PHONY: install test lint typecheck check migrate up down cov backup restore new-rule eval \
+	adversarial \
 	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
 install: frontend-install
@@ -42,6 +43,11 @@ typecheck:
 	cd backend && ../$(PY) -m mypy
 
 check: lint typecheck test frontend-check
+
+# IMPLEMENTATION.md section 23's nine adversarial families (P7-T4). Also a
+# required CI check - see .github/workflows/ci.yml.
+adversarial:
+	cd backend && ../$(PY) -m pytest -q tests/security/adversarial
 
 migrate:
 	cd backend && ../$(PY) -m alembic upgrade head

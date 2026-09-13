@@ -81,7 +81,13 @@ class CaseResult:
     image_quality: str
     expected_fields: dict[str, str | None]
     actual_fields: dict[str, str | None]
+    # One entry per asserted (non-null) field, for the hallucination-rate
+    # metric, which only cares about the aggregate.
     verified_flags: list[bool]
+    # The same information keyed by field path, for callers that need to
+    # know *which* field failed verification (the P7-T4 adversarial suite
+    # asserts per-field evidence outcomes).
+    verified_by_field: dict[str, bool | None]
     expected_findings: dict[str, str]
     actual_findings: dict[str, str]
     finding_confidences: dict[str, float]
@@ -132,7 +138,11 @@ def _bootstrap_analysis(db: Session, case: GoldenCase) -> Analysis:
         file_page_id=page.id,
         engine="eval-stub",
         engine_version="1",
-        avg_confidence=0.9,
+        avg_confidence=(
+            sum(t.confidence for t in case.ocr_tokens) / len(case.ocr_tokens)
+            if case.ocr_tokens
+            else 0.0
+        ),
         raw=[],
     )
     db.add(ocr_result)
@@ -144,7 +154,7 @@ def _bootstrap_analysis(db: Session, case: GoldenCase) -> Analysis:
                 file_page_id=page.id,
                 ocr_result_id=ocr_result.id,
                 text=token.text,
-                confidence=0.9,
+                confidence=token.confidence,
                 x1=token.x1,
                 y1=token.y1,
                 x2=token.x2,
@@ -210,6 +220,7 @@ def run_case(db: Session, case: GoldenCase) -> CaseResult:
     ).all()
     actual_fields = {f.field_path: f.value_raw for f in fields}
     verified_flags = [bool(f.verified) for f in fields if f.value_raw is not None]
+    verified_by_field = {f.field_path: f.verified for f in fields}
 
     findings = db.scalars(select(Finding).where(Finding.analysis_id == analysis.id)).all()
     actual_findings = {f.rule_key: f.status.value for f in findings}
@@ -221,6 +232,7 @@ def run_case(db: Session, case: GoldenCase) -> CaseResult:
         expected_fields=case.expected_fields,
         actual_fields=actual_fields,
         verified_flags=verified_flags,
+        verified_by_field=verified_by_field,
         expected_findings=case.expected_findings,
         actual_findings=actual_findings,
         finding_confidences=finding_confidences,

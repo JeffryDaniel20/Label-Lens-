@@ -44,6 +44,11 @@ jobs:
         run: pytest -q --cov=app --cov-report=term --cov-fail-under=85
       - name: Security suite (tenant isolation, authz, CSRF, enumeration)
         run: pytest -q -m security
+      # P7-T4's own acceptance line: "suite is a required CI check". Run as
+      # its own step rather than folded into the line above so a failure
+      # names the adversarial suite directly in the job summary.
+      - name: Adversarial suite (IMPLEMENTATION.md section 23's nine families)
+        run: pytest -q tests/security/adversarial
       - name: PostgreSQL guarantees (RLS, append-only audit log)
         run: pytest -q -m postgres
       - name: Dependency audit
