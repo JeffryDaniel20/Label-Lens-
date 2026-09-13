@@ -339,3 +339,47 @@ class TestTenantIsolation:
             db, organization_id=org.id, product_version_id=version.id
         )
         assert [t.text for t in tokens] == ["Wheat flour", "250 g", "Contains: Wheat"]
+
+
+class TestSelectedResultFiltering:
+    """P3-T3: a page that went through escalation carries two real
+    `OcrResult`s. Only the `selected` one's tokens may reach extraction -
+    otherwise the model would see the page's text twice, once per engine."""
+
+    def test_an_unselected_results_tokens_are_never_loaded(self, db, analysis_with_tokens) -> None:
+        org, version, _analysis = analysis_with_tokens
+        page = db.scalar(select(FilePage).where(FilePage.organization_id == org.id))
+        assert page is not None
+
+        unselected = OcrResult(
+            organization_id=org.id,
+            file_page_id=page.id,
+            engine="fallback-fake",
+            engine_version="1",
+            avg_confidence=0.2,
+            raw=[],
+            selected=False,
+        )
+        db.add(unselected)
+        db.flush()
+        db.add(
+            OcrTokenRow(
+                organization_id=org.id,
+                file_page_id=page.id,
+                ocr_result_id=unselected.id,
+                text="GARBAGE FROM THE UNSELECTED ENGINE",
+                confidence=0.2,
+                x1=0.0,
+                y1=0.0,
+                x2=5.0,
+                y2=10.0,
+                line_no=99,
+            )
+        )
+        db.commit()
+
+        tokens = service.load_ocr_tokens(
+            db, organization_id=org.id, product_version_id=version.id
+        )
+        assert [t.text for t in tokens] == ["Wheat flour", "250 g", "Contains: Wheat"]
+        assert "GARBAGE FROM THE UNSELECTED ENGINE" not in [t.text for t in tokens]

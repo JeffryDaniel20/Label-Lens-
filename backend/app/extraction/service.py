@@ -30,7 +30,7 @@ from app.extraction.llm import base as provider_base
 from app.extraction.llm import prompt as prompt_module
 from app.extraction.llm.wire import ExtractionEnvelope
 from app.extraction.models import ExtractedField, Extraction
-from app.vision.models import OcrTokenRow
+from app.vision.models import OcrResult, OcrTokenRow
 
 MAX_ATTEMPTS = 3
 
@@ -66,13 +66,20 @@ def load_ocr_tokens(
     indices the model sees follow the label as a human would read it -
     adjacency carries real meaning for panel detection, and a shuffled list
     would quietly make extraction harder for no reason.
+
+    Joined through `OcrResult.selected` (P3-T3): a page that went through
+    confidence-triggered escalation carries two real `OcrResult`s (primary
+    and fallback), and only the one the escalation policy actually selected
+    should ever reach the model - without this filter, an escalated page's
+    text would be handed to the LLM twice, once per engine.
     """
     stmt = (
         tenant_scoped(
             select(OcrTokenRow)
             .join(FilePage, FilePage.id == OcrTokenRow.file_page_id)
             .join(File, File.id == FilePage.file_id)
-            .where(File.product_version_id == product_version_id),
+            .join(OcrResult, OcrResult.id == OcrTokenRow.ocr_result_id)
+            .where(File.product_version_id == product_version_id, OcrResult.selected.is_(True)),
             OcrTokenRow,
             organization_id,
         )

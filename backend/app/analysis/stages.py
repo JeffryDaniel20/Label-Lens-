@@ -287,7 +287,9 @@ def _ocr(db: Session, analysis: Analysis) -> AnalysisState | None:
     from app.platform.config import get_settings
     from app.storage.client import build_storage_client
     from app.vision.models import OcrResult
-    from app.vision.ocr.service import get_default_ocr_engine, run_ocr
+    from app.vision.ocr import build_ocr_fallback_engine
+    from app.vision.ocr.escalation import EscalationPolicy, run_ocr_with_escalation
+    from app.vision.ocr.service import get_default_ocr_engine
 
     pages = list(
         db.scalars(
@@ -322,14 +324,26 @@ def _ocr(db: Session, analysis: Analysis) -> AnalysisState | None:
         # retrying elsewhere cannot succeed either.
         raise PermanentStageError(f"OCR engine unavailable: {exc}") from exc
 
-    storage = build_storage_client(get_settings())
+    settings = get_settings()
+    storage = build_storage_client(settings)
+    fallback_engine = build_ocr_fallback_engine(settings)
+    policy = EscalationPolicy(
+        confidence_threshold=settings.ocr_fallback_confidence_threshold,
+        daily_budget_per_org=settings.ocr_fallback_daily_budget_per_org,
+    )
 
     for page in pages:
         if page.id in already_done:
             continue
         try:
-            run_ocr(
-                db, storage, engine, organization_id=analysis.organization_id, file_page=page
+            run_ocr_with_escalation(
+                db,
+                storage,
+                organization_id=analysis.organization_id,
+                file_page=page,
+                primary_engine=engine,
+                fallback_engine=fallback_engine,
+                policy=policy,
             )
         except ValueError as exc:
             # `run_ocr` raises `ValueError` when the rendered page can't be

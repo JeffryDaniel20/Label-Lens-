@@ -912,6 +912,13 @@ Objective: Google Vision adapter, confidence-triggered escalation, both attempts
 Depends on: P3-T2. Tests: contract tests against recorded fixtures; escalation triggers at the threshold; budget exhaustion degrades gracefully.
 Acceptance: a deliberately blurry fixture escalates once and records both engine results.
 
+**2026-09-13 implementation note:** the escalation *policy* half of this objective is real and
+shipped, vendor-neutrally - `app/vision/ocr/escalation.py`, `app/vision/ocr/__init__.py`, and
+`OcrResult.selected` (migration `0017`), tested against fake `OcrEngine`s in
+`tests/unit/test_ocr_escalation.py`. The Google Vision adapter itself remains unbuilt: D-03
+(Google Vision vs Azure Read) is still open, and either vendor needs real cloud credentials this
+session does not have - see TESTTEST.md's P3-T3 row for the exact scope split.
+
 **P3-T4 · Fact schema (the pipeline contract)**
 Objective: Pydantic models for the normalized fact set (ingredients, allergens, nutrition, quantity,
 dates, claims, addresses, languages), versioned as `schema_version`.

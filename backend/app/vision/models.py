@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import JSON, Float, ForeignKey, Index, Integer, String, Uuid
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKey
@@ -43,6 +43,14 @@ class OcrResult(UUIDPrimaryKey, TimestampMixin, Base):
     # coerced to plain JSON), before any coordinate remapping - kept for
     # re-derivation and debugging, distinct from the normalized rows below.
     raw: Mapped[list[object]] = mapped_column(JSON, nullable=False)
+    # P3-T3: a page can now genuinely have more than one `OcrResult` (a
+    # primary read plus an escalated fallback read) - exactly one of them is
+    # `selected` at a time, and `app.extraction.service.load_ocr_tokens`
+    # reads only the selected result's tokens, so extraction/evidence never
+    # see a page's text duplicated across two engines. Defaults `True`
+    # because every non-escalated page still has exactly one `OcrResult`,
+    # which is trivially "the" one.
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class OcrTokenRow(UUIDPrimaryKey, TimestampMixin, Base):
