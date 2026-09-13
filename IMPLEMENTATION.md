@@ -1162,3 +1162,44 @@ P0 ──► P1 ──► P2 ──► P3 ──┐
 **Disaster recovery** — RPO ≤ 24 h, RTO ≤ 4 h, restore drill executed and dated.
 **Privacy** — retention and deletion jobs verified; DSR procedure documented; provider data-handling terms recorded; local-only mode functional.
 **Performance** — p95 analysis time within target under load; no memory growth over a 24 h soak.
+
+**P7-T9 security review pass (2026-09-13).** Each item in the **Security** bullet above, checked
+against the real codebase and fixed where a real gap was found (never marked green on inspection
+alone):
+- **Dependency audit clean** — a real finding, fixed: the dev environment's `pip` (25.0.1) carried
+  12 known CVEs (`pip-audit` failed `--strict` once the local `labellens` package itself was
+  excluded from the scan via a generated `-r` requirements list, the correct way to audit this
+  project's actual dependencies rather than the unpublishable local package). Upgraded to `pip`
+  26.2.1 — `pip-audit --strict` now reports zero vulnerabilities. `.github/workflows/ci.yml` gained
+  an explicit `pip install --upgrade pip` step before `pip install -e ".[dev]"` so a stale
+  `actions/setup-python`-provided `pip` can't silently reintroduce this. `npm audit` on the
+  frontend found 2 real high-severity transitive vulnerabilities (`js-yaml` via the dev-only
+  `@redocly/openapi-core` OpenAPI tool) — fixed with `npm audit fix`; `npm audit --omit=dev` was
+  already clean (nothing vulnerable ships in the production bundle).
+- **Headers verified** — `app.platform.middleware.SecurityHeadersMiddleware` sets
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy` and a
+  restrictive `Content-Security-Policy` on every response, with real test coverage
+  (`tests/integration/test_auth_and_ops.py`). **One real, honestly-recorded gap**: §14/§4 both name
+  Caddy as the layer that adds HSTS in production, and §4's own architecture table already commits
+  to Caddy as the chosen infra - but no `Caddyfile` or reverse-proxy service exists anywhere in this
+  repository yet. Building it here would mean fabricating production TLS/proxy configuration ahead
+  of the actual deploy target, which is P7-T7's job and is still blocked on the open D-05 hosting
+  decision - recorded as a real, named gap rather than stubbed out to make this checklist item look
+  fully green.
+- **File upload attacks rejected** — real coverage across `tests/unit/test_ingestion.py`,
+  `tests/integration/test_ingestion_upload_completion.py::TestAdversarialUploads`, and
+  `tests/security/adversarial/test_family_file_and_abuse.py` (P7-T4); re-run clean during this pass.
+- **Tenant isolation and injection suites green** — `pytest -m security` (120 tests, incl. the full
+  P7-T4 adversarial package) re-run clean during this pass.
+- **Secrets rotated and out of the repo** — `git ls-files`/`git grep` confirm no committed `.env`,
+  private key, or recognizable cloud-credential pattern anywhere in tracked history's current tip;
+  `.gitignore` excludes `.env`/`.env.*`; `docs/runbooks/key-rotation.md` (P7-T6) already documents
+  the rotation procedure for every `LABELLENS_*` secret.
+- **MFA available** — real TOTP enrollment/challenge/recovery-code flow (`app/identity/service.py`,
+  `POST /v1/me/mfa/start`/`confirm`), covered by `tests/integration/test_auth_and_ops.py`; re-run
+  clean during this pass.
+
+Also verified, adjacent to Security: migration `0016` (P7-T8) upgrades and downgrades cleanly
+against `test_migration_upgrade_and_downgrade`/`test_migrated_schema_matches_the_models` (the
+**Testing** bullet's "migration rollback tested"). No application code changed in this pass beyond
+the CI workflow step above and the two dependency-lock fixes - this was a review, not a feature.
