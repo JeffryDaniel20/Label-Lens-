@@ -68,6 +68,9 @@ def signup(
         password=payload.password,
         display_name=payload.display_name,
         ip=_client_ip(request),
+        limiter=_limiter(request),
+        max_attempts_per_ip=settings.signup_max_attempts_per_ip,
+        window_seconds=settings.signup_window_seconds,
     )
     session_id, data = sessions.create(user_id=user.id, org_id=org.id, ip=_client_ip(request))
     _set_session_cookie(response, session_id, settings)

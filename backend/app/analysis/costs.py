@@ -1,12 +1,11 @@
 """Per-stage cost/token recording, summed onto the analysis row (P5-T5).
 
-A real OCR/LLM stage function (still blocked - see `app.analysis.stages`'s
-module docstring) calls `record_stage_cost` itself, using the same `db`/
-`analysis` `advance_analysis` already hands it, once its provider call
-returns real usage numbers. Nothing here assumes who called it or how many
-times - repeated calls across a run simply keep summing, which is the whole
-point: the analysis's own totals are always "cost so far," correct whether
-read mid-run or after `completed`.
+`app.analysis.stages._extracting` calls `record_stage_cost` itself, using
+the same `db`/`analysis` `advance_analysis` already hands it, once the real
+LLM provider call returns real usage numbers. Nothing here assumes who
+called it or how many times - repeated calls across a run simply keep
+summing, which is the whole point: the analysis's own totals are always
+"cost so far," correct whether read mid-run or after `completed`.
 """
 
 from __future__ import annotations

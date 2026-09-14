@@ -15,10 +15,13 @@ append-only, reusing the same `labellens_reject_mutation()` trigger function
 `audit_logs` already defined.
 
 `model_manifest_id` is a plain UUID with no foreign key: `model_manifests`
-(IMPLEMENTATION.md §5) has no dedicated table or task yet in this codebase -
-nothing before Phase 3's LLM extraction (still blocked on an API credential)
-has anything meaningful to put in one. It's carried here as an identifier
-placeholder so the column exists when that table does.
+(IMPLEMENTATION.md §5) never got a dedicated table, by a later, deliberate
+decision (P7-T1) rather than a still-open blocker - every value such a
+table would hold (provider, model, prompt version/hash, OCR engine
+versions) already exists on rows this codebase persists, so
+`app.reports.service` builds a manifest live from those instead. This
+column is carried as an identifier placeholder in case that decision is
+ever revisited, not because anything upstream of it is still blocked.
 """
 
 from __future__ import annotations

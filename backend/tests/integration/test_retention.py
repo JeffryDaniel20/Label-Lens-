@@ -422,3 +422,64 @@ class TestDsrExport:
             db, user=db.scalar(select(User).where(User.email == "member@dsr.test")), org_id=org_a.id
         )
         assert export["membership"]["organization_id"] == str(org_a.id)
+
+
+class TestOrganizationSettings:
+    """A production-readiness audit finding: IMPLEMENTATION.md's own role
+    table says Admin can "manage... retention settings," and
+    `Organization.retention_days`/`cloud_ai_enabled` already existed and
+    were already read back via `OrganizationOut` - but no endpoint ever let
+    anyone actually change either one. Closed here."""
+
+    def test_get_returns_the_real_defaults(self, owner: ApiSession) -> None:
+        body = owner.get(f"/v1/organizations/{owner.org_id}").json()
+        assert body["retention_days"] == 365
+        assert body["cloud_ai_enabled"] is True
+
+    def test_admin_can_update_retention_days_and_cloud_ai_enabled(
+        self, owner: ApiSession, db
+    ) -> None:
+        updated = owner.patch(
+            f"/v1/organizations/{owner.org_id}",
+            json={"retention_days": 90, "cloud_ai_enabled": False},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["retention_days"] == 90
+        assert updated.json()["cloud_ai_enabled"] is False
+
+        org = db.get(Organization, uuid.UUID(owner.org_id))
+        assert org.retention_days == 90
+        assert org.cloud_ai_enabled is False
+
+        audit_row = db.scalar(select(AuditLog).where(AuditLog.action == AuditAction.ORG_UPDATED))
+        assert audit_row is not None
+        assert audit_row.after == {"retention_days": 90, "cloud_ai_enabled": False}
+
+    def test_a_viewer_cannot_update_organization_settings(self, owner: ApiSession, db) -> None:
+        org = db.get(Organization, uuid.UUID(owner.org_id))
+        viewer_user = make_user(db, org, role=Role.VIEWER, email="viewer@acmefoods.com")
+        db.commit()
+        viewer = ApiSession(owner.client, viewer_user.email)
+
+        resp = viewer.patch(f"/v1/organizations/{owner.org_id}", json={"retention_days": 1})
+        assert resp.status_code == 403
+
+    def test_retention_days_out_of_bounds_is_rejected(self, owner: ApiSession) -> None:
+        assert (
+            owner.patch(f"/v1/organizations/{owner.org_id}", json={"retention_days": 0}).status_code
+            == 400
+        )
+        assert (
+            owner.patch(
+                f"/v1/organizations/{owner.org_id}", json={"retention_days": 999999}
+            ).status_code
+            == 400
+        )
+
+    def test_cannot_view_or_update_another_organization(self, owner: ApiSession) -> None:
+        foreign_id = uuid.uuid4()
+        assert owner.get(f"/v1/organizations/{foreign_id}").status_code == 403
+        assert (
+            owner.patch(f"/v1/organizations/{foreign_id}", json={"retention_days": 1}).status_code
+            == 403
+        )

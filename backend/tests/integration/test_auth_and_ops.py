@@ -119,6 +119,36 @@ class TestSignupAndLogin:
         response = client.post("/v1/auth/signup", json={**SIGNUP, "password": "alllowercase"})
         assert response.status_code == 400
 
+    def test_signup_is_rate_limited_per_ip(self, client) -> None:
+        """A real production-readiness gap, found and closed: signup is the
+        one mutating endpoint with no authenticated identity to key a
+        lockout on, and does real, expensive work (Argon2 hashing, an
+        org+user+membership insert) for every unauthenticated call - exactly
+        the kind of thing IMPLEMENTATION.md's own "per-IP + per-org rate
+        limits" API-security bullet exists for."""
+        limit = get_settings().signup_max_attempts_per_ip
+        for i in range(limit):
+            resp = client.post(
+                "/v1/auth/signup",
+                json={
+                    "organization_name": f"Org {i}",
+                    "email": f"owner{i}@ratelimit-test.com",
+                    "password": "CorrectHorse42!",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+
+        blocked = client.post(
+            "/v1/auth/signup",
+            json={
+                "organization_name": "One Too Many",
+                "email": "overflow@ratelimit-test.com",
+                "password": "CorrectHorse42!",
+            },
+        )
+        assert blocked.status_code == 429
+        assert "Retry-After" in blocked.headers
+
     def test_login_and_logout_revokes_session_server_side(self, client) -> None:
         client.post("/v1/auth/signup", json=SIGNUP)
         api = ApiSession(client, "owner@acmefoods.com")

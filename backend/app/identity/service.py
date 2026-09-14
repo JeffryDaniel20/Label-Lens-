@@ -32,7 +32,14 @@ from app.identity.passwords import (
     verify_password,
     verify_token,
 )
-from app.platform.errors import Conflict, Forbidden, NotFound, Unauthenticated, ValidationFailed
+from app.platform.errors import (
+    Conflict,
+    Forbidden,
+    NotFound,
+    RateLimited,
+    Unauthenticated,
+    ValidationFailed,
+)
 from app.platform.ratelimit import RateLimiter
 
 API_KEY_PREFIX = "llk"
@@ -79,7 +86,27 @@ def create_organization_with_owner(
     password: str,
     display_name: str = "",
     ip: str | None = None,
+    limiter: RateLimiter | None = None,
+    max_attempts_per_ip: int = 5,
+    window_seconds: int = 60 * 60,
 ) -> tuple[Organization, User]:
+    # Unauthenticated and genuinely expensive (Argon2 hashing plus an
+    # org+user+membership insert) - the one mutating endpoint with no
+    # per-account identity to key a lockout on, so this limits by IP
+    # instead. `limiter` is optional only so direct, non-HTTP callers
+    # (scripts, future admin tooling) aren't forced to wire one up; the real
+    # `/v1/auth/signup` endpoint always passes one.
+    if limiter is not None:
+        allowed, retry_after = limiter.hit(
+            f"signup:{ip or 'noip'}", limit=max_attempts_per_ip, window_seconds=window_seconds
+        )
+        if not allowed:
+            raise RateLimited(
+                "Too many accounts created from this address recently. "
+                f"Try again in {retry_after or window_seconds} seconds.",
+                retry_after=retry_after or window_seconds,
+            )
+
     email = email.strip().lower()
     if db.scalar(select(User).where(User.email == email)) is not None:
         raise Conflict("An account with that email already exists.")
@@ -115,6 +142,41 @@ def create_organization_with_owner(
         ip=ip,
     )
     return org, user
+
+
+def update_organization(
+    db: Session,
+    *,
+    org: Organization,
+    actor_id: uuid.UUID | None,
+    actor_type: ActorType,
+    actor_label: str | None,
+    changes: dict[str, object],
+    ip: str | None = None,
+) -> Organization:
+    """Admin's own "manage... retention settings" capability, finally
+    wired: `retention_days`/`cloud_ai_enabled` existed and were already
+    read back via `OrganizationOut`, but nothing let an Admin change either
+    one - a production-readiness audit finding, closed here, mirroring
+    `app.catalog.service.update_product`'s own shape exactly."""
+    before = {k: getattr(org, k) for k in changes}
+    for key, value in changes.items():
+        setattr(org, key, value)
+    db.flush()
+    audit.record(
+        db,
+        action=AuditAction.ORG_UPDATED,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        actor_label=actor_label,
+        organization_id=org.id,
+        resource_type="organization",
+        resource_id=org.id,
+        before=before,
+        after=changes,
+        ip=ip,
+    )
+    return org
 
 
 def add_member(

@@ -38,6 +38,18 @@ class OrganizationOut(BaseModel):
     cloud_ai_enabled: bool
 
 
+class OrganizationUpdateRequest(BaseModel):
+    """Admin's own "manage... retention settings" capability
+    (IMPLEMENTATION.md's role table) - previously undeliverable: the
+    `Organization.retention_days`/`cloud_ai_enabled` columns existed and
+    were already read back via `OrganizationOut`, but no endpoint let an
+    Admin actually change either one. A production-readiness audit finding,
+    fixed here."""
+
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+    cloud_ai_enabled: bool | None = Field(default=None)
+
+
 class MembershipOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     organization_id: uuid.UUID

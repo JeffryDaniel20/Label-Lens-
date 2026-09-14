@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # --- auth hardening ---------------------------------------------------
     login_max_attempts: int = 10
     login_lockout_seconds: int = 15 * 60
+    # Signup is the one mutating endpoint that needs no authentication at
+    # all and does real, expensive work (Argon2 hashing, an org+user+
+    # membership insert) for every call - a real gap found in a
+    # production-readiness audit: nothing rate-limited it, unlike login,
+    # even though IMPLEMENTATION.md section 14's own "API security" bullet
+    # calls for "per-IP + per-org rate limits" across the whole surface.
+    signup_max_attempts_per_ip: int = 5
+    signup_window_seconds: int = 60 * 60
     argon2_memory_kib: int = 65536
     argon2_time_cost: int = 3
     argon2_parallelism: int = 2

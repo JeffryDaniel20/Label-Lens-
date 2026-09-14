@@ -32,6 +32,7 @@ class AuditAction(enum.StrEnum):
     MFA_FAILED = "auth.mfa.failed"
     LOGOUT = "auth.logout"
     ORG_CREATED = "org.created"
+    ORG_UPDATED = "org.updated"
     MEMBER_INVITED = "member.invited"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"

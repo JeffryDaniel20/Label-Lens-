@@ -1234,3 +1234,13 @@ Also verified, adjacent to Security: migration `0016` (P7-T8) upgrades and downg
 against `test_migration_upgrade_and_downgrade`/`test_migrated_schema_matches_the_models` (the
 **Testing** bullet's "migration rollback tested"). No application code changed in this pass beyond
 the CI workflow step above and the two dependency-lock fixes - this was a review, not a feature.
+
+**Final production-readiness audit (2026-09-14), after every task above was done.** Two real gaps
+this pass's own dependency-only lens had not covered, both fixed: signup carried no rate limit at
+all (the one unauthenticated, expensive mutating endpoint in the whole API), leaving
+`app.platform.errors.RateLimited` fully built and handler-wired but never actually raised anywhere;
+and Admin's own documented "manage... retention settings" capability (§4's role table) had no
+endpoint to exercise it - `Organization.retention_days`/`cloud_ai_enabled` existed and were already
+read back via `OrganizationOut`, but nothing could ever write to them. Both fixed with real
+tests - see TESTTEST.md's log entry 72 for full detail, including the stale docstrings (references
+to D-01/D-06 as still-open blockers, long since resolved) found and corrected in the same pass.

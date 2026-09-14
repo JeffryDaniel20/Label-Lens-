@@ -1,12 +1,15 @@
 """Write findings + `finding_evidence` edges, and read them back (P5-T4).
 
 `persist_findings` is the one function that turns `app.rules.evaluator`'s
-pure, in-memory `Finding` objects into real, tenant-scoped, immutable rows -
-`rule_eval` itself stays a placeholder (blocked on D-01, no published
-ruleset to evaluate against yet), so this is exercised directly against a
-real published ruleset + real evaluator output rather than through the full
-pipeline, the same scoping this codebase has used for every other task in
-this dependency chain (P3-T6, P3-T8) that could not wait on D-01 either.
+pure, in-memory `Finding` objects into real, tenant-scoped, immutable rows.
+Originally written and unit-tested directly against a real published
+ruleset + real evaluator output, ahead of D-01 (first jurisdiction) being
+resolved - the same scoping this codebase used for every other task in this
+dependency chain (P3-T6, P3-T8) that could not wait on D-01 either. D-01 was
+resolved (India/FSSAI) and `app.analysis.stages._rule_eval` now calls this
+module for real, through the full pipeline, for every analysis whose
+classified jurisdiction/category has a published ruleset - see
+`app.analysis.stages`'s own module docstring for that history.
 """
 
 from __future__ import annotations

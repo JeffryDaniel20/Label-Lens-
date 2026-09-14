@@ -102,12 +102,13 @@ def find_active_ruleset(
     _rule_eval` needs before it can even attempt `load_ruleset()`.
 
     Returns `None`, not an error, the moment nothing has been published yet
-    for that jurisdiction/category - true for every jurisdiction in this
-    repository today, since D-01 (first jurisdiction) remains undecided and
-    P4-T5 (real rule content) untouched. An absent ruleset is a fact about
-    the world this function reports honestly, not a bug to raise on -
-    `_rule_eval` treats it exactly like its own placeholder predecessor did:
-    an honest no-op, never a fabricated finding.
+    for that jurisdiction/category. D-01 (first jurisdiction) was resolved
+    (India/FSSAI) and P4-T5 published a real pack, so this returns a real
+    ruleset for `("IN", "packaged_food")` today - but for every other
+    jurisdiction/category, nothing has been published yet, and an absent
+    ruleset there is a fact about the world this function reports honestly,
+    not a bug to raise on - `_rule_eval` treats that case as an honest
+    no-op, never a fabricated finding.
 
     If more than one version's effective window somehow covers `as_of`
     (should not happen given `publish_pack`'s own `(jurisdiction, category,

@@ -1,5 +1,11 @@
 """Retention/deletion/DSR HTTP endpoints (P7-T8):
 
+- `GET`/`PATCH /v1/organizations/{id}` - reading and updating an org's own
+  settings (`retention_days`/`cloud_ai_enabled`). Added in a later
+  production-readiness audit: Admin's own "manage... retention settings"
+  capability (IMPLEMENTATION.md's role table) had no endpoint to actually
+  exercise it - `OrganizationOut` existed and the columns existed, but
+  nothing ever wrote to them.
 - `DELETE`/`POST .../restore` on organizations and products - phase one
   (soft delete, 30-day restore window) of the two-phase deletion IMPLEMENTATION.md
   16 calls for. Phase two (the hard purge) is a maintenance job
@@ -19,7 +25,9 @@ from sqlalchemy.orm import Session
 
 from app.catalog.models import Product
 from app.db.session import tenant_scoped
-from app.identity.deps import Principal, get_db, require
+from app.identity import schemas
+from app.identity import service as identity_service
+from app.identity.deps import Principal, get_db, get_organization, require
 from app.identity.models import Organization
 from app.identity.rbac import Capability
 from app.platform.errors import Forbidden, NotFound, Unauthenticated
@@ -55,6 +63,43 @@ def _lookup_product_ignoring_deletion(
     if product is None:
         raise NotFound("Product not found.")
     return product
+
+
+@router.get("/organizations/{org_id}", response_model=schemas.OrganizationOut)
+def get_organization_settings(
+    org_id: uuid.UUID,
+    principal: Principal = Depends(require(Capability.ORG_VIEW)),
+    org: Organization = Depends(get_organization),
+) -> schemas.OrganizationOut:
+    if org_id != principal.org_id:
+        raise Forbidden("You may only view the organization you belong to.")
+    return schemas.OrganizationOut.model_validate(org)
+
+
+@router.patch("/organizations/{org_id}", response_model=schemas.OrganizationOut)
+def update_organization_settings(
+    org_id: uuid.UUID,
+    payload: schemas.OrganizationUpdateRequest,
+    request: Request,
+    principal: Principal = Depends(require(Capability.ORG_UPDATE)),
+    org: Organization = Depends(get_organization),
+    db: Session = Depends(get_db),
+) -> schemas.OrganizationOut:
+    if org_id != principal.org_id:
+        raise Forbidden("You may only update the organization you belong to.")
+    changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if changes:
+        identity_service.update_organization(
+            db,
+            org=org,
+            actor_id=principal.actor_id,
+            actor_type=principal.actor_type,
+            actor_label=principal.actor_label,
+            changes=changes,
+            ip=_ip(request),
+        )
+        db.commit()
+    return schemas.OrganizationOut.model_validate(org)
 
 
 @router.delete("/organizations/{org_id}", status_code=204)
