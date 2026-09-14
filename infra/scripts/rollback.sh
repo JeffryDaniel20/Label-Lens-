@@ -9,10 +9,11 @@
 # argument): IMPLEMENTATION.md section 25's own words, "rollback never
 # requires a down-migration."
 #
-# Usage:
+# Usage (via `bash`, not a bare path - a real checkout never has the
+# execute bit set):
 #   REGISTRY=ghcr.io/you IMAGE_TAG=<previous-good-sha> \
 #   COMPOSE_FILE=infra/docker-compose.prod.yml \
-#     infra/scripts/rollback.sh
+#     bash infra/scripts/rollback.sh
 #
 # `deploy.sh` also accepts IMAGE_TAG being pre-set (it exports the previous
 # tag itself before calling this script); a manual invocation must set it

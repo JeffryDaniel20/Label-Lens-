@@ -24,7 +24,7 @@ purges (P7-T8).
 Cron (or a systemd timer) on the VPS, nightly:
 ```
 0 2 * * * DATABASE_URL=postgresql://... BACKUP_S3_BUCKET=labellens-backups \
-  /srv/infra/scripts/backup_db.sh >> /var/log/labellens-backup.log 2>&1
+  bash /srv/infra/scripts/backup_db.sh >> /var/log/labellens-backup.log 2>&1
 ```
 An example bucket lifecycle rule for the 30-day retention mentioned in the objective (MinIO/S3 JSON):
 ```json
@@ -36,7 +36,7 @@ An example bucket lifecycle rule for the 30-day retention mentioned in the objec
 
 ```
 TARGET_DATABASE_URL=postgresql://user:pass@host:port/db \
-  infra/scripts/restore_db.sh path/to/labellens-<timestamp>.dump
+  bash infra/scripts/restore_db.sh path/to/labellens-<timestamp>.dump
 ```
 `--clean --if-exists` means this is safe to run against a database that already has the old schema
 in it (a genuine disaster-recovery restore) as well as a truly empty one (a scratch drill) - existing

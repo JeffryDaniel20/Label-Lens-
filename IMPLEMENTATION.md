@@ -1095,8 +1095,24 @@ safe). The acceptance criterion was proven for real, locally, via `infra/scripts
 the dated result. D-05 (hosting target) is deliberately left open by explicit instruction rather
 than fabricated: it is a real business decision for whoever operates the deployment, and nothing
 built here presumes one answer over the other. `.github/workflows/deploy.yml` is authored and
-YAML-valid but has never fired as a real GitHub Actions run - the same honest gap P0-T5's own row
-already records (no git remote configured in this session).
+YAML-valid but has never fired as a real GitHub Actions run with real secrets and a real target host
+behind them.
+
+**2026-09-15 real-deployment-readiness verification.** A real git remote now exists for this
+repository (previously absent) - the "no git remote" half of P0-T5/P7-T7's own honest blockers no
+longer applies, though whether Actions has actually run against it is unverified from this session
+(no API credentials). This pass found and fixed three genuine deployment-blocking defects, each
+verified against real infrastructure: `docker-compose.prod.yml` was missing the `postgres-wal-init`
+chown fix P7-T6 already applied to local dev, so WAL archiving would have silently failed with
+"Permission denied" in a real deployment (reproduced and fixed against a real Postgres container);
+`deploy.yml` built an invalid, mixed-case GHCR image reference against this repository's real name
+(`Label-Lens-` has uppercase and a trailing hyphen - GHCR requires all-lowercase), fixed with a
+tested shell computation; and every script-to-script/documented shell invocation in the deploy and
+backup/restore tooling relied on the execute bit, which `core.fileMode=false` means this repository's
+own git history never actually carries - fixed by invoking every one via `bash <path>`. `ci.yml` was
+also found to have no frontend job at all despite section 26's own PR-gate wording naming it
+explicitly - fixed. See TESTTEST.md's log entry 73 for full detail and the exact remaining external
+actions (D-05, GitHub secrets/environments, and the real `LABELLENS_*` production credentials).
 
 **P7-T8 · Retention, deletion, and DSR**
 Objective: retention purge job, two-phase org/product deletion, export endpoint, audit of purges.

@@ -37,17 +37,25 @@ same way.
 Every host, SSH key, and domain the workflow references is a GitHub Actions secret an operator must
 configure (`STAGING_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`, `STAGING_DOMAIN`,
 `PRODUCTION_HOST`, `PRODUCTION_SSH_USER`, `PRODUCTION_SSH_KEY`) - none are fabricated in this
-repository, and the workflow has never fired as a real GitHub Actions run in this environment: there
-is no git remote configured here (the same gap P0-T5's own row records), and firing it for real
-additionally needs a real chosen host per D-05. What *has* been verified for real is the mechanism
-the workflow drives on the target host - see the drill below.
+repository, and the workflow has never fired as a real GitHub Actions run with real
+`STAGING_*`/`PRODUCTION_*` secrets and a real target host behind them - firing it for real needs a
+chosen host per D-05, plus that host and every secret actually provisioned. What *has* been verified
+for real is the mechanism the workflow drives on the target host - see the drill below.
 
 ## `deploy.sh` / `rollback.sh`
 
 ```
 REGISTRY=ghcr.io/you IMAGE_TAG=<sha> COMPOSE_FILE=infra/docker-compose.prod.yml \
-  infra/scripts/deploy.sh
+  bash infra/scripts/deploy.sh
 ```
+
+Always invoked via `bash`, never as a bare path or `./deploy.sh` - a real `git clone`/`git pull`
+checkout never carries the execute bit (this repository's own Windows-checked-out history never
+recorded it either, `core.fileMode=false`), so relying on it would fail with "Permission denied" on
+a real target the first time this ever ran outside a machine someone had manually `chmod +x`-ed it
+on. A deployment-readiness audit found this same gap in three other places (`deploy.sh`'s own call
+to `rollback.sh`, `deploy_drill.sh`'s calls to `deploy.sh`, and `backup_db.sh`/`restore_db.sh`'s own
+usage comments) and fixed all of them the same way.
 
 1. Runs `docker compose run --rm migrate` (the expand step) - if this fails, the release never
    touches a single app container and the rollback path below fires immediately (there is nothing

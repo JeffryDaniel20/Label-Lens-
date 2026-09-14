@@ -36,6 +36,19 @@ x-backend-env: &backend-env
   LABELLENS_CLAMD_HOST: ${LABELLENS_CLAMD_HOST:-}
 
 services:
+  # A fresh named volume is root-owned; postgres's own entrypoint only
+  # chowns PGDATA itself, not other mounted volumes, so `archive_command`
+  # below (running as the `postgres` user, uid 70) fails with "Permission
+  # denied" against `/wal_archive` until something chowns it first - the
+  # exact bug P7-T6's own restore-drill verification found and fixed for
+  # local dev (`docker-compose.yml`'s `postgres-wal-init`); missing here
+  # until a deployment-readiness audit caught the same fix never having
+  # been carried over into this file.
+  postgres-wal-init:
+    image: alpine:3.20
+    volumes: ["wal_archive:/wal_archive"]
+    command: ["chown", "-R", "70:70", "/wal_archive"]
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -45,6 +58,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-labellens}
     expose: ["5432"]  # never published to the host - only `api`/`worker-*` reach it
     volumes: ["pgdata:/var/lib/postgresql/data", "wal_archive:/wal_archive"]
+    depends_on:
+      postgres-wal-init: {condition: service_completed_successfully}
     command: >
       postgres
       -c archive_mode=on

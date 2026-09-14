@@ -5,12 +5,14 @@
 # production database without a deliberate, reviewed reason - `--clean
 # --if-exists` will happily drop and recreate every object it finds.
 #
-# Usage: TARGET_DATABASE_URL=postgresql://user:pass@host:port/db \
-#          ./restore_db.sh path/to/labellens-<timestamp>.dump
+# Usage (via `bash`, not `./restore_db.sh` - a real checkout never has the
+# execute bit set; `make restore` already does this correctly):
+#   TARGET_DATABASE_URL=postgresql://user:pass@host:port/db \
+#     bash restore_db.sh path/to/labellens-<timestamp>.dump
 set -euo pipefail
 
 : "${TARGET_DATABASE_URL:?TARGET_DATABASE_URL must be set (postgresql://user:pass@host:port/db)}"
-dump_file="${1:?Usage: restore_db.sh <dump-file>}"
+dump_file="${1:?Usage: bash restore_db.sh <dump-file>}"
 
 if [ ! -f "$dump_file" ]; then
   echo "No such backup file: $dump_file" >&2

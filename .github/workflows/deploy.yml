@@ -5,26 +5,22 @@ name: Deploy
 # staging, run smoke E2E, await manual approval, deploy to production, run
 # migrations, health-check, auto-rollback to previous SHA on failure."
 #
-# This workflow is authored and complete, but - like `ci.yml` before it
-# (P0-T5's own honestly-recorded gap) - has never actually fired as a real
-# GitHub Actions run: this repository has no remote configured in this
-# session, and firing it for real additionally needs every secret named
-# below to be configured by whoever operates the real staging/production
-# hosts (D-05, still an open decision - single VPS vs Fly/Render - is
-# exactly what those hosts would be). None of those secrets, hosts, or
-# registries are fabricated here; every one is a GitHub Actions secret an
-# operator must set before this workflow can run for real. The mechanism it
-# drives (`infra/scripts/deploy.sh`/`rollback.sh`) *has* been proven for
+# This workflow is authored, YAML-valid, and its image-reference computation
+# verified for real (see the deployment-readiness audit that added the
+# lowercasing step below) - but has never fired as a real GitHub Actions run
+# with real STAGING_*/PRODUCTION_*/GITHUB_TOKEN-backed GHCR access, since
+# firing it for real needs every secret named below to be configured by
+# whoever operates the real staging/production hosts (D-05, still an open
+# decision - single VPS vs Fly/Render - is exactly what those hosts would
+# be). None of those secrets, hosts, or registries are fabricated here;
+# every one is a GitHub Actions secret an operator must set. The mechanism
+# it drives (`infra/scripts/deploy.sh`/`rollback.sh`) *has* been proven for
 # real, locally, via `infra/scripts/deploy_drill.sh` - see
 # docs/runbooks/deploy-and-rollback.md for the dated drill result.
 on:
   push:
     branches: [main]
   workflow_dispatch:
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/labellens-api
 
 jobs:
   build-and-push:
@@ -33,9 +29,21 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image_tag: ${{ github.sha }}
+      # GHCR (like every OCI registry) requires an all-lowercase image
+      # reference, but `github.repository` is whatever case the repo/account
+      # actually use (this repo is "JeffryDaniel20/Label-Lens-", which has
+      # both) - computed once here, a genuine deployment-blocking bug caught
+      # in a deployment-readiness audit (a straight `${{ github.repository
+      # }}` interpolation would have made `docker/build-push-action` reject
+      # the tag outright). `registry` is the `REGISTRY` value
+      # `infra/scripts/deploy.sh`/`infra/docker-compose.prod.yml` both
+      # expect - everything up to, but not including, `/labellens-api`.
+      registry: ${{ steps.image.outputs.registry }}
     steps:
       - uses: actions/checkout@v4
+      - name: Compute a valid, all-lowercase image registry path
+        id: image
+        run: echo "registry=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]' | cut -d/ -f1)" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -45,7 +53,7 @@ jobs:
         with:
           context: backend
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ steps.image.outputs.registry }}/labellens-api:${{ github.sha }}
 
   deploy-staging:
     needs: build-and-push
@@ -68,10 +76,10 @@ jobs:
           script: |
             cd /srv/labellens
             git pull
-            REGISTRY=${{ env.REGISTRY }}/${{ github.repository_owner }} \
+            REGISTRY=${{ needs.build-and-push.outputs.registry }} \
             IMAGE_TAG=${{ github.sha }} \
             COMPOSE_FILE=infra/docker-compose.prod.yml \
-              infra/scripts/deploy.sh
+              bash infra/scripts/deploy.sh
 
   smoke-test-staging:
     needs: deploy-staging
@@ -87,7 +95,7 @@ jobs:
   # real mechanism behind "await manual approval" - not simulated here, a
   # native platform feature this job's `environment:` key activates.
   deploy-production:
-    needs: smoke-test-staging
+    needs: [build-and-push, smoke-test-staging]
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -101,7 +109,7 @@ jobs:
           script: |
             cd /srv/labellens
             git pull
-            REGISTRY=${{ env.REGISTRY }}/${{ github.repository_owner }} \
+            REGISTRY=${{ needs.build-and-push.outputs.registry }} \
             IMAGE_TAG=${{ github.sha }} \
             COMPOSE_FILE=infra/docker-compose.prod.yml \
-              infra/scripts/deploy.sh
+              bash infra/scripts/deploy.sh

@@ -56,7 +56,7 @@ docker build -t local/labellens-api:broken "$broken_dir" >/tmp/drill_build_broke
 rm -rf "$broken_dir"
 
 log "=== step 1: deploy the good release ==="
-IMAGE_TAG=good "$script_dir/deploy.sh"
+IMAGE_TAG=good bash "$script_dir/deploy.sh"
 
 log "seeding real data through the real running API"
 signup_body='{"organization_name":"Drill Org","email":"owner@drill-test.com","password":"CorrectHorse42!"}'
@@ -72,7 +72,7 @@ log "seeded product: $(cat /tmp/drill_product.json)"
 grep -q "Drill Chips" /tmp/drill_product.json || { echo "seeding failed" >&2; exit 1; }
 
 log "=== step 2: deploy the broken release (expected to fail health and auto-rollback) ==="
-if IMAGE_TAG=broken "$script_dir/deploy.sh"; then
+if IMAGE_TAG=broken bash "$script_dir/deploy.sh"; then
   echo "FAIL: the broken deploy was reported healthy - it should not have been" >&2
   exit 1
 fi

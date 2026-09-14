@@ -12,7 +12,9 @@
 # infra/docker-compose.yml's `postgres` service and
 # docs/runbooks/backup-and-restore.md.
 #
-# Usage: DATABASE_URL=postgresql://user:pass@host:port/db ./backup_db.sh
+# Usage (via `bash`, not `./backup_db.sh` - a real checkout never has the
+# execute bit set; `make backup` already does this correctly):
+#   DATABASE_URL=postgresql://user:pass@host:port/db bash backup_db.sh
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (postgresql://user:pass@host:port/db)}"

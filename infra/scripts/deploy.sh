@@ -16,10 +16,11 @@
 # now-migrated schema too. Rollback therefore never touches the database at
 # all - only application containers move.
 #
-# Usage:
+# Usage (via `bash`, not a bare path - see this file's own internal call to
+# rollback.sh for why: a real checkout never has the execute bit set):
 #   REGISTRY=ghcr.io/you IMAGE_TAG=<sha> \
 #   COMPOSE_FILE=infra/docker-compose.prod.yml \
-#     infra/scripts/deploy.sh
+#     bash infra/scripts/deploy.sh
 set -uo pipefail
 
 : "${COMPOSE_FILE:?COMPOSE_FILE must be set (e.g. infra/docker-compose.prod.yml)}"
@@ -91,8 +92,16 @@ if [ -z "$previous_tag" ]; then
 fi
 
 log "auto-rolling back to IMAGE_TAG=$previous_tag"
+# `bash "$script_dir/..."`, not a bare path: a real deployment target checks
+# this file out from git with `core.fileMode` off (or simply without the
+# executable bit ever having been committed - Windows checkouts never track
+# it), so relying on the execute permission bit here would fail with
+# "Permission denied" the moment this ever runs somewhere other than a dev
+# machine that happened to `chmod +x` it by hand. Found in a
+# deployment-readiness audit; fixed the same way everywhere this repo
+# invokes one of its own shell scripts from another.
 COMPOSE_FILE="$COMPOSE_FILE" IMAGE_TAG="$previous_tag" REGISTRY="$REGISTRY" \
   APP_SERVICES="$APP_SERVICES" HEALTH_TIMEOUT_SECONDS="$HEALTH_TIMEOUT_SECONDS" \
   HEALTH_POLL_INTERVAL_SECONDS="$HEALTH_POLL_INTERVAL_SECONDS" \
-  "$script_dir/rollback.sh"
+  bash "$script_dir/rollback.sh"
 exit 1
