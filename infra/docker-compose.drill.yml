@@ -1,0 +1,94 @@
+# Local rollback-drill target for `infra/scripts/deploy_drill.sh` (P7-T7).
+#
+# Deliberately the smallest slice that still exercises the real mechanism
+# `infra/docker-compose.prod.yml` uses in production: a real Postgres, a
+# real Redis, a real migration run before the app starts, and the real
+# `api` image's own `/readyz` deciding whether a deploy is healthy - no
+# Caddy/workers, since they add nothing to proving "a deliberately broken
+# deploy auto-rolls back with no data loss," which is entirely about the
+# app container and the database. Redis *is* included, not skipped: with
+# `LABELLENS_ENVIRONMENT=production` (matching the real prod compose) the
+# app refuses the test-only `memory://` store (`app/main.py::_build_stores`)
+# exactly as it should in a real deployment, so a real Redis is what a
+# faithful drill needs, not a shortcut worth papering over.
+name: labellens-drill
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: labellens
+      POSTGRES_PASSWORD: labellens
+      POSTGRES_DB: labellens
+    expose: ["5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labellens"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    expose: ["6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # `/readyz`'s storage check (app/main.py) needs a real, reachable
+  # S3-compatible endpoint too, or it reports "degraded" against real AWS
+  # with no credentials configured - the same real gap P7-T9's security
+  # review caught in a plain integration test. MinIO here, exactly like the
+  # local dev compose already uses.
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: labellens
+      MINIO_ROOT_PASSWORD: labellens-dev-secret
+    expose: ["9000"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 labellens labellens-dev-secret &&
+      mc mb --ignore-existing local/labellens-uploads"
+
+  migrate:
+    image: ${REGISTRY}/labellens-api:${IMAGE_TAG}
+    environment:
+      LABELLENS_ENVIRONMENT: production
+      LABELLENS_SECRET_KEY: drill-only-secret-key-not-a-real-credential-0000
+      LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
+      LABELLENS_REDIS_URL: redis://redis:6379/0
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    image: ${REGISTRY}/labellens-api:${IMAGE_TAG}
+    environment:
+      LABELLENS_ENVIRONMENT: production
+      LABELLENS_SECRET_KEY: drill-only-secret-key-not-a-real-credential-0000
+      LABELLENS_DATABASE_URL: postgresql+psycopg://labellens:labellens@postgres:5432/labellens
+      LABELLENS_REDIS_URL: redis://redis:6379/0
+      LABELLENS_COOKIE_SECURE: "false"
+      LABELLENS_STORAGE_ENDPOINT_URL: http://minio:9000
+      LABELLENS_STORAGE_BUCKET: labellens-uploads
+      LABELLENS_STORAGE_ACCESS_KEY: labellens
+      LABELLENS_STORAGE_SECRET_KEY: labellens-dev-secret
+    expose: ["8000"]
+    ports: ["18000:8000"]  # host-reachable only so the drill script can seed/verify data directly
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}

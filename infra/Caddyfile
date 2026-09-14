@@ -1,0 +1,26 @@
+# Production TLS termination and edge security headers (P7-T7; closes the
+# gap P7-T9's security review recorded honestly: IMPLEMENTATION.md sections
+# 4 and 14 both name Caddy as where HSTS comes from, but no Caddyfile
+# existed anywhere in this repository until now).
+#
+# `{$DOMAIN}` must be set to the real domain a production deployment actually
+# owns - never fabricated or hardcoded here. Caddy issues and renews its own
+# TLS certificate automatically for whatever `{$DOMAIN}` resolves to
+# (Automatic HTTPS via Let's Encrypt/ZeroSSL), which is *why* this is a
+# one-line site address rather than a certificate-management story of its
+# own.
+{$DOMAIN} {
+	# HSTS - the one header `app.platform.middleware.SecurityHeadersMiddleware`
+	# deliberately does not set itself, since the application process never
+	# knows whether the connection reaching it was actually TLS (only the
+	# edge that terminated it does). Preload is deliberately not requested
+	# here - preload lists are effectively permanent and belong to a
+	# deliberate, separate operational decision, not a default.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# The application's own CSP/X-Content-Type-Options/Referrer-Policy/
+	# Cross-Origin-Opener-Policy headers (already set by
+	# `SecurityHeadersMiddleware`) pass through `reverse_proxy` unmodified -
+	# nothing here needs to duplicate them.
+	reverse_proxy api:8000
+}

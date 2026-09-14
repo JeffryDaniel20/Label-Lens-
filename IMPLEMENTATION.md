@@ -912,12 +912,19 @@ Objective: Google Vision adapter, confidence-triggered escalation, both attempts
 Depends on: P3-T2. Tests: contract tests against recorded fixtures; escalation triggers at the threshold; budget exhaustion degrades gracefully.
 Acceptance: a deliberately blurry fixture escalates once and records both engine results.
 
-**2026-09-13 implementation note:** the escalation *policy* half of this objective is real and
-shipped, vendor-neutrally - `app/vision/ocr/escalation.py`, `app/vision/ocr/__init__.py`, and
+**2026-09-14 implementation note — done, D-03 resolved.** The escalation *policy* is real and
+vendor-neutral - `app/vision/ocr/escalation.py`, `app/vision/ocr/__init__.py`, and
 `OcrResult.selected` (migration `0017`), tested against fake `OcrEngine`s in
-`tests/unit/test_ocr_escalation.py`. The Google Vision adapter itself remains unbuilt: D-03
-(Google Vision vs Azure Read) is still open, and either vendor needs real cloud credentials this
-session does not have - see TESTTEST.md's P3-T3 row for the exact scope split.
+`tests/unit/test_ocr_escalation.py`. The Google Vision adapter is now real too:
+`app/vision/ocr/google_vision.py::GoogleVisionOcrEngine`, chosen over Azure Read because this
+section's own architecture table above already named Google Cloud Vision `document_text_detection`
+as the OCR fallback, reached over the plain REST `images:annotate` endpoint (no new SDK, no
+service-account JSON), credentialed only via `LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY` -
+environment-based, never hardcoded, and an empty key degrades escalation to disabled rather than
+failing anything. Contract-tested against a recorded-shape fixture in
+`tests/unit/test_google_vision_ocr.py`; a real, credential-gated live call is
+`tests/integration/test_ocr_google_vision_live.py` (`google_vision`-marked, skipped without
+`LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY`). See TESTTEST.md's P3-T3 and D-03 rows for full detail.
 
 **P3-T4 · Fact schema (the pipeline contract)**
 Objective: Pydantic models for the normalized fact set (ingredients, allergens, nutrition, quantity,
@@ -1073,6 +1080,23 @@ Depends on: P0-T2. Acceptance: a restore into a scratch environment is performed
 **P7-T7 · Production deploy pipeline and rollback**
 Objective: staging→prod workflow, expand/migrate/contract discipline, health-gated rollout, auto-rollback.
 Depends on: P0-T5, P7-T6. Acceptance: a deliberately broken deploy auto-rolls back with no data loss.
+
+**2026-09-14 implementation note — done, D-05 deliberately left open.** `infra/docker-compose.prod.yml`
+(pulls images by tag; every credential a required, fail-loud environment variable),
+`infra/Caddyfile` (real HSTS + reverse proxy - closes the gap P7-T9's security review recorded:
+sections 4/14 named Caddy as where security headers/HSTS come from, but no Caddyfile existed until
+now), `infra/scripts/deploy.sh`/`rollback.sh` (migrate → start → poll the real `/readyz`, now
+checking database/Redis/storage per section 25's own list → auto-rollback on any failure, never
+running a migration on the way back), and `backend/scripts/check_migration_discipline.py` (a real
+static check, enforced in CI, that every migration's `upgrade()` is something the *previous* app
+version tolerates - the precondition that makes "rollback never touches the database" actually
+safe). The acceptance criterion was proven for real, locally, via `infra/scripts/deploy_drill.sh`
+(`make deploy-drill`) - see TESTTEST.md's P7-T7 row and `docs/runbooks/deploy-and-rollback.md` for
+the dated result. D-05 (hosting target) is deliberately left open by explicit instruction rather
+than fabricated: it is a real business decision for whoever operates the deployment, and nothing
+built here presumes one answer over the other. `.github/workflows/deploy.yml` is authored and
+YAML-valid but has never fired as a real GitHub Actions run - the same honest gap P0-T5's own row
+already records (no git remote configured in this session).
 
 **P7-T8 · Retention, deletion, and DSR**
 Objective: retention purge job, two-phase org/product deletion, export endpoint, audit of purges.

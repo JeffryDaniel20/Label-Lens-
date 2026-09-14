@@ -15,3 +15,6 @@ htmlcov/
 node_modules/
 dist/
 backend/evals/reports/
+# P7-T7: deploy.sh's own last-known-good-tag marker - runtime state on the
+# deploy target, never something to commit.
+infra/.deploy_state

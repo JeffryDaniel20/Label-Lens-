@@ -1,0 +1,107 @@
+name: Deploy
+
+# P7-T7: staging -> production deploy pipeline, matching IMPLEMENTATION.md
+# section 26 literally: "On merge to main: build + push image, deploy to
+# staging, run smoke E2E, await manual approval, deploy to production, run
+# migrations, health-check, auto-rollback to previous SHA on failure."
+#
+# This workflow is authored and complete, but - like `ci.yml` before it
+# (P0-T5's own honestly-recorded gap) - has never actually fired as a real
+# GitHub Actions run: this repository has no remote configured in this
+# session, and firing it for real additionally needs every secret named
+# below to be configured by whoever operates the real staging/production
+# hosts (D-05, still an open decision - single VPS vs Fly/Render - is
+# exactly what those hosts would be). None of those secrets, hosts, or
+# registries are fabricated here; every one is a GitHub Actions secret an
+# operator must set before this workflow can run for real. The mechanism it
+# drives (`infra/scripts/deploy.sh`/`rollback.sh`) *has* been proven for
+# real, locally, via `infra/scripts/deploy_drill.sh` - see
+# docs/runbooks/deploy-and-rollback.md for the dated drill result.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/labellens-api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      # `appleboy/ssh-action` runs `infra/scripts/deploy.sh` on the target
+      # host itself over SSH - the same script `deploy-production` below
+      # runs, and the same one `deploy_drill.sh` proves locally. The host,
+      # its SSH key, and every `LABELLENS_*` secret it needs are entirely
+      # the operator's own - see infra/docker-compose.prod.yml for the full
+      # list of required environment variables.
+      - name: Deploy to staging over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /srv/labellens
+            git pull
+            REGISTRY=${{ env.REGISTRY }}/${{ github.repository_owner }} \
+            IMAGE_TAG=${{ github.sha }} \
+            COMPOSE_FILE=infra/docker-compose.prod.yml \
+              infra/scripts/deploy.sh
+
+  smoke-test-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Smoke test staging's public health endpoint
+        run: |
+          curl -fsS "https://${{ secrets.STAGING_DOMAIN }}/healthz"
+          curl -fsS "https://${{ secrets.STAGING_DOMAIN }}/readyz" | grep -q '"status":"ready"'
+
+  # GitHub's own Environment protection rules (required reviewers,
+  # configured by the repo owner on the "production" environment) is the
+  # real mechanism behind "await manual approval" - not simulated here, a
+  # native platform feature this job's `environment:` key activates.
+  deploy-production:
+    needs: smoke-test-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to production over SSH (health-gated, auto-rollback on failure)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /srv/labellens
+            git pull
+            REGISTRY=${{ env.REGISTRY }}/${{ github.repository_owner }} \
+            IMAGE_TAG=${{ github.sha }} \
+            COMPOSE_FILE=infra/docker-compose.prod.yml \
+              infra/scripts/deploy.sh

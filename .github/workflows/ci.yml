@@ -52,5 +52,11 @@ jobs:
         run: pytest -q tests/security/adversarial
       - name: PostgreSQL guarantees (RLS, append-only audit log)
         run: pytest -q -m postgres
+      # P7-T7: static check that every migration's upgrade() is something
+      # the *previous* app version can tolerate - the precondition
+      # infra/scripts/deploy.sh's rollback (redeploy the old image, never
+      # `alembic downgrade`) depends on.
+      - name: Migration expand/migrate/contract discipline
+        run: python scripts/check_migration_discipline.py
       - name: Dependency audit
         run: pip install pip-audit && pip-audit --strict

@@ -5,7 +5,7 @@ PY := backend/.venv/bin/python
 endif
 
 .PHONY: install test lint typecheck check migrate up down cov backup restore new-rule eval \
-	adversarial retention-purge \
+	adversarial retention-purge migration-discipline deploy-drill \
 	frontend-install frontend-test frontend-lint frontend-typecheck frontend-check frontend-e2e
 
 install: frontend-install
@@ -51,6 +51,17 @@ adversarial:
 
 migrate:
 	cd backend && ../$(PY) -m alembic upgrade head
+
+# P7-T7: static expand/migrate/contract discipline check over every real
+# migration - also a required CI check, see .github/workflows/ci.yml.
+migration-discipline:
+	cd backend && ../$(PY) scripts/check_migration_discipline.py
+
+# P7-T7: the real, local Docker drill for the deploy pipeline's own
+# acceptance criterion - "a deliberately broken deploy auto-rolls back with
+# no data loss." See docs/runbooks/deploy-and-rollback.md.
+deploy-drill:
+	bash infra/scripts/deploy_drill.sh
 
 # P7-T8: nightly retention purge + two-phase deletion hard purge, against
 # the real configured database and object store. See scripts/purge_retention.py.

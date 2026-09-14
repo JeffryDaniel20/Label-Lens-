@@ -24,10 +24,36 @@ class TestOps:
     def test_healthz_does_not_touch_dependencies(self, client) -> None:
         assert client.get("/healthz").json() == {"status": "ok"}
 
-    def test_readyz_reports_each_dependency(self, client) -> None:
+    def test_readyz_reports_each_dependency(
+        self, client, app, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The default test environment configures no real S3-compatible
+        # endpoint (see `object_storage`-marked tests for that), so a live
+        # `head_object` call here would hit real AWS with no credentials and
+        # fail slowly - exactly what a real deployment's own configured
+        # storage would answer quickly instead. Stubbed here to prove
+        # `readyz`'s own aggregation logic without a real network call.
+        monkeypatch.setattr(app.state.storage_client, "head_object", lambda key: None)
+
         body = client.get("/readyz").json()
         assert body["status"] == "ready"
         assert body["checks"]["database"] == "ok"
+        assert body["checks"]["redis"] == "ok"
+        assert body["checks"]["storage"] == "ok"
+
+    def test_readyz_is_degraded_when_a_dependency_is_actually_down(
+        self, client, app, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _broken_head_object(key: str):
+            raise ConnectionError("storage endpoint unreachable")
+
+        monkeypatch.setattr(app.state.storage_client, "head_object", _broken_head_object)
+
+        body = client.get("/readyz").json()
+
+        assert body["status"] == "degraded"
+        assert body["checks"]["storage"] == "error: ConnectionError"
+        assert body["checks"]["database"] == "ok"  # the other dependencies are unaffected
 
     def test_correlation_id_is_returned_and_echoed(self, client) -> None:
         response = client.get("/healthz")

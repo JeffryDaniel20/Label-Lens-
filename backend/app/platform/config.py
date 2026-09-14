@@ -66,19 +66,21 @@ class Settings(BaseSettings):
     clamd_host: str = ""
     clamd_port: int = 3310
 
-    # --- OCR fallback escalation (P3-T3; D-03 - vendor - still open) -------
-    # Only "null" (disabled) exists today: D-03 (Google Vision vs Azure Read)
-    # is still an open decision, and either vendor needs real cloud
-    # credentials this environment doesn't have - see
-    # `app/vision/ocr/escalation.py`'s own module docstring. The escalation
-    # *policy* (confidence threshold, per-org daily budget, dual-recording,
-    # selection between two real results) is fully real and tested against a
-    # fake fallback engine; only the vendor call itself is blocked, exactly
-    # the same "config, not code" posture D-06 already established for the
-    # LLM provider and D-02 for object storage - adding a real vendor here
-    # later is one adapter class plus one new `Literal` member, not a
-    # pipeline change.
-    ocr_fallback_provider: Literal["null"] = "null"
+    # --- OCR fallback escalation (P3-T3; D-03 resolved 2026-09-14: Google
+    # Cloud Vision, matching IMPLEMENTATION.md section 4's own architecture
+    # table, which already named it as the chosen OCR fallback) -----------
+    # "null" keeps escalation disabled (the default, and what every
+    # environment without a configured key gets); "google_vision" is real -
+    # see `app/vision/ocr/google_vision.py`. Config, not code, the same
+    # posture D-06 already established for the LLM provider and D-02 for
+    # object storage.
+    ocr_fallback_provider: Literal["null", "google_vision"] = "null"
+    # Empty key means the provider is not actually usable even if selected -
+    # `build_ocr_fallback_engine` then disables escalation entirely rather
+    # than fabricating a credential, the same posture
+    # `app/extraction/llm/__init__.py::build_provider` uses for the LLM key.
+    ocr_fallback_google_vision_api_key: str = ""
+    ocr_fallback_timeout_seconds: int = 30
     # Matches the MEDIUM confidence-tier threshold `app.confidence.tiers`
     # already uses elsewhere in this codebase, so "low enough to escalate"
     # and "low enough to force review" agree with each other.

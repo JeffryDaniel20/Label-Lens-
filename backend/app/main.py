@@ -56,8 +56,20 @@ def healthz() -> dict[str, str]:
 
 
 @health_router.get("/readyz")
-def readyz() -> dict[str, Any]:
-    """Readiness: report each dependency separately so a partial outage is visible."""
+def readyz(request: Request) -> dict[str, Any]:
+    """Readiness: report each dependency separately so a partial outage is
+    visible - IMPLEMENTATION.md section 25's literal "DB + Redis + storage +
+    provider reachability" list, minus the LLM provider: a real generation
+    call on every readiness probe would add real cost and latency to the hot
+    health-check path a deploy script polls every few seconds (P7-T7),
+    trading a fast/free signal for a slow/billable one for no real safety
+    gain - a broken LLM credential still surfaces immediately as an
+    `extraction_failed` analysis and a metric/alert (P7-T5), just not here.
+
+    This is the endpoint `infra/scripts/deploy.sh`'s health gate (P7-T7)
+    polls before promoting a new deploy, so "ready" here must mean the new
+    version can actually serve traffic, not just that the process started.
+    """
     checks: dict[str, str] = {}
     try:
         with get_engine().connect() as conn:
@@ -65,6 +77,24 @@ def readyz() -> dict[str, Any]:
         checks["database"] = "ok"
     except Exception as exc:  # pragma: no cover - exercised via failure injection
         checks["database"] = f"error: {type(exc).__name__}"
+
+    try:
+        rate_limiter: RateLimiter = request.app.state.rate_limiter
+        rate_limiter.store.incr("readyz:ping", ttl_seconds=5)
+        checks["redis"] = "ok"
+    except Exception as exc:  # pragma: no cover - exercised via failure injection
+        checks["redis"] = f"error: {type(exc).__name__}"
+
+    try:
+        storage_client = request.app.state.storage_client
+        # `head_object` returning `None` for a nonexistent key is still a
+        # successful round trip - only a raised exception (connection
+        # refused, bad credentials, ...) means the store is actually down.
+        storage_client.head_object("readyz-liveness-probe-nonexistent-key")
+        checks["storage"] = "ok"
+    except Exception as exc:  # pragma: no cover - exercised via failure injection
+        checks["storage"] = f"error: {type(exc).__name__}"
+
     ready = all(v == "ok" for v in checks.values())
     return {"status": "ready" if ready else "degraded", "checks": checks}
 

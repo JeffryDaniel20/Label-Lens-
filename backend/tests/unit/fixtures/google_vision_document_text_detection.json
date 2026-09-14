@@ -1,0 +1,128 @@
+{
+  "responses": [
+    {
+      "fullTextAnnotation": {
+        "text": "NET QUANTITY\n250 g\n",
+        "pages": [
+          {
+            "property": {
+              "detectedLanguages": [{"languageCode": "en", "confidence": 0.97}]
+            },
+            "width": 400,
+            "height": 200,
+            "blocks": [
+              {
+                "boundingBox": {
+                  "vertices": [
+                    {"x": 10, "y": 10},
+                    {"x": 200, "y": 10},
+                    {"x": 200, "y": 40},
+                    {"x": 10, "y": 40}
+                  ]
+                },
+                "paragraphs": [
+                  {
+                    "boundingBox": {
+                      "vertices": [
+                        {"x": 10, "y": 10},
+                        {"x": 200, "y": 10},
+                        {"x": 200, "y": 40},
+                        {"x": 10, "y": 40}
+                      ]
+                    },
+                    "words": [
+                      {
+                        "boundingBox": {
+                          "vertices": [
+                            {"x": 10, "y": 10},
+                            {"x": 100, "y": 10},
+                            {"x": 100, "y": 40},
+                            {"x": 10, "y": 40}
+                          ]
+                        },
+                        "confidence": 0.98,
+                        "property": {
+                          "detectedLanguages": [{"languageCode": "en"}]
+                        },
+                        "symbols": [
+                          {"text": "N"}, {"text": "E"}, {"text": "T"}
+                        ]
+                      },
+                      {
+                        "boundingBox": {
+                          "vertices": [
+                            {"x": 110, "y": 10},
+                            {"x": 200, "y": 10},
+                            {"x": 200, "y": 40},
+                            {"x": 110, "y": 40}
+                          ]
+                        },
+                        "confidence": 0.96,
+                        "symbols": [
+                          {"text": "Q"}, {"text": "U"}, {"text": "A"}, {"text": "N"},
+                          {"text": "T"}, {"text": "I"}, {"text": "T"}, {"text": "Y"}
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "boundingBox": {
+                  "vertices": [
+                    {"x": 10, "y": 60},
+                    {"x": 90, "y": 60},
+                    {"x": 90, "y": 90},
+                    {"x": 10, "y": 90}
+                  ]
+                },
+                "paragraphs": [
+                  {
+                    "boundingBox": {
+                      "vertices": [
+                        {"x": 10, "y": 60},
+                        {"x": 90, "y": 60},
+                        {"x": 90, "y": 90},
+                        {"x": 10, "y": 90}
+                      ]
+                    },
+                    "words": [
+                      {
+                        "boundingBox": {
+                          "vertices": [
+                            {"x": 10, "y": 60},
+                            {"x": 50, "y": 60},
+                            {"x": 50, "y": 90},
+                            {"x": 10, "y": 90}
+                          ]
+                        },
+                        "confidence": 0.94,
+                        "symbols": [
+                          {"text": "2"}, {"text": "5"}, {"text": "0"}
+                        ]
+                      },
+                      {
+                        "boundingBox": {
+                          "vertices": [
+                            {"x": 55, "y": 60},
+                            {"x": 90, "y": 60},
+                            {"x": 90, "y": 90},
+                            {"x": 55, "y": 90}
+                          ]
+                        },
+                        "confidence": 0.90,
+                        "symbols": [
+                          {"text": "g"}
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

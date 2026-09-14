@@ -1,25 +1,24 @@
 """Confidence-triggered OCR escalation (P3-T3).
 
-IMPLEMENTATION.md names a concrete cloud vendor (Google Cloud Vision) for
-this fallback, but **D-03 (which vendor - Google Vision vs Azure Read) is
-still an open decision**, and whichever is chosen additionally needs real
-cloud credentials this environment does not have - the same honest blocker
-`app.extraction.llm` records for D-06 until it was resolved, and the same
-one P3-T3's own row in TESTTEST.md has recorded since P3-T2.
+D-03 (which vendor - Google Vision vs Azure Read) is resolved as of
+2026-09-14: Google Cloud Vision, matching IMPLEMENTATION.md section 4's own
+architecture table (see `app/vision/ocr/google_vision.py`'s module
+docstring for why). Real credentials still gate whether it actually runs in
+any given environment - `LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY` empty
+means `app.vision.ocr.build_ocr_fallback_engine` returns `None`, the same
+"configured but uncredentialed degrades to disabled" posture as everywhere
+else optional in this codebase (Sentry, ClamAV, ...).
 
-What *is* real and shipped here is the vendor-neutral escalation policy
-itself, mirroring `app/extraction/llm/base.py::ExtractionProvider`'s own
-"a vendor sits behind a narrow Protocol" posture: `run_ocr_with_escalation`
-runs the primary engine, and escalates to a second `OcrEngine` - any
-`OcrEngine`, real or fake, cloud or not - only when three independent
-conditions all hold: the primary result's own confidence is below
-threshold, a fallback engine is actually configured
-(`app.vision.ocr.build_ocr_fallback_engine` returns `None` today, since
-`LABELLENS_OCR_FALLBACK_PROVIDER` has no real option yet), and the
-organization's own daily fallback budget isn't already exhausted. Budget
-exhaustion (the task's own literal acceptance line, "degrades gracefully")
-means silently keeping the primary result - never failing the analysis over
-a missing or exhausted fallback.
+The policy this module implements is entirely vendor-neutral, mirroring
+`app/extraction/llm/base.py::ExtractionProvider`'s own "a vendor sits behind
+a narrow Protocol" posture: `run_ocr_with_escalation` runs the primary
+engine, and escalates to a second `OcrEngine` - any `OcrEngine`, real or
+fake, cloud or not - only when three independent conditions all hold: the
+primary result's own confidence is below threshold, a fallback engine is
+actually configured, and the organization's own daily fallback budget isn't
+already exhausted. Budget exhaustion (the task's own literal acceptance
+line, "degrades gracefully") means silently keeping the primary result -
+never failing the analysis over a missing or exhausted fallback.
 
 Both attempts are recorded as their own real `OcrResult` row whenever
 escalation actually runs (the task's other literal acceptance line) - nothing

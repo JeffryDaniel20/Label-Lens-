@@ -1,13 +1,15 @@
 """P3-T3: confidence-triggered OCR escalation.
 
-Uses fake `OcrEngine`s (no real cloud vendor call - D-03, which vendor, is
-still an open decision this session cannot make, and either option needs
-real credentials this environment doesn't have). What's proven here is the
-policy itself: the primary engine always runs; the fallback runs only when
-genuinely triggered; both attempts are recorded when it does; the higher-
-confidence result is the one selected; and an exhausted budget degrades
-gracefully rather than failing the analysis - the task's own literal
-acceptance lines, all real and independently testable of any specific vendor.
+Uses fake `OcrEngine`s so the policy itself is proven independently of any
+specific vendor's behaviour: the primary engine always runs; the fallback
+runs only when genuinely triggered; both attempts are recorded when it does;
+the higher-confidence result is the one selected; and an exhausted budget
+degrades gracefully rather than failing the analysis - the task's own
+literal acceptance lines. The real Google Cloud Vision adapter (D-03,
+resolved 2026-09-14) has its own contract tests in
+`test_google_vision_ocr.py` and a live opt-in test in
+`tests/integration/test_ocr_google_vision_live.py`; this module never makes
+a real cloud call.
 """
 
 from __future__ import annotations
@@ -161,9 +163,7 @@ class TestEscalationTriggersAndRecordsBoth:
         assert result.engine == "fallback"
         assert result.selected is True
 
-        rows = db.scalars(
-            select(OcrResult).where(OcrResult.file_page_id == file_page.id)
-        ).all()
+        rows = db.scalars(select(OcrResult).where(OcrResult.file_page_id == file_page.id)).all()
         assert {r.engine for r in rows} == {"primary", "fallback"}
         selected_engines = {r.engine for r in rows if r.selected}
         assert selected_engines == {"fallback"}
@@ -189,9 +189,7 @@ class TestEscalationTriggersAndRecordsBoth:
 
         assert fallback.calls == 1  # it still ran and was recorded
         assert result.engine == "primary"
-        rows = db.scalars(
-            select(OcrResult).where(OcrResult.file_page_id == file_page.id)
-        ).all()
+        rows = db.scalars(select(OcrResult).where(OcrResult.file_page_id == file_page.id)).all()
         assert len(rows) == 2
         selected = [r for r in rows if r.selected]
         assert [r.engine for r in selected] == ["primary"]
@@ -215,9 +213,7 @@ class TestNoFallbackConfigured:
 
         assert result.engine == "primary"
         assert result.selected is True
-        rows = db.scalars(
-            select(OcrResult).where(OcrResult.file_page_id == file_page.id)
-        ).all()
+        rows = db.scalars(select(OcrResult).where(OcrResult.file_page_id == file_page.id)).all()
         assert len(rows) == 1
 
 
@@ -309,3 +305,27 @@ class TestFallbackProviderSelection:
         settings = get_settings().model_copy(update={"ocr_fallback_provider": "not-a-real-vendor"})
         with pytest.raises(ValueError, match="Unknown OCR fallback provider"):
             build_ocr_fallback_engine(settings)
+
+    def test_google_vision_selected_without_a_credential_degrades_to_disabled(self) -> None:
+        """An operator flipping the provider on before the key is set gets
+        escalation quietly staying off, not a pipeline-wide crash on the
+        next analysis - unlike the LLM provider, OCR escalation is optional
+        by design, so there is always a safe fallback: the primary result."""
+        settings = get_settings().model_copy(
+            update={
+                "ocr_fallback_provider": "google_vision",
+                "ocr_fallback_google_vision_api_key": "",
+            }
+        )
+        assert build_ocr_fallback_engine(settings) is None
+
+    def test_google_vision_selected_with_a_credential_builds_the_real_engine(self) -> None:
+        settings = get_settings().model_copy(
+            update={
+                "ocr_fallback_provider": "google_vision",
+                "ocr_fallback_google_vision_api_key": "test-key-not-a-real-credential",
+            }
+        )
+        engine = build_ocr_fallback_engine(settings)
+        assert engine is not None
+        assert engine.name == "google_vision"

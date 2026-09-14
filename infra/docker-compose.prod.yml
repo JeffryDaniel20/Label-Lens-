@@ -1,0 +1,148 @@
+# Production/staging deploy target (P7-T7), matching IMPLEMENTATION.md
+# section 25's architecture literally: containers `api`, `worker` (x3, one
+# per queue), `postgres`, `redis`, `caddy`; images built in CI and pulled
+# here by tag, never built on the host; migrations run as a one-shot
+# container before the API starts.
+#
+# Unlike `docker-compose.yml` (local dev - builds from source, bind-mounts
+# the repo, hot-reloads), this file only ever *pulls* `${REGISTRY}/
+# labellens-api:${IMAGE_TAG}` - the exact image CI built and pushed for one
+# specific commit SHA, so "deploy this SHA" and "run this image" are the
+# same statement. Every credential and target below is a required
+# environment variable (`${VAR:?...}` fails loudly if unset) - nothing here
+# is a real host, domain, or secret; an operator supplies all of them via
+# `infra/.env` (600 permissions, never committed) or the orchestrator's own
+# secret store, per section 25's "host `.env` (600) + Docker secrets;
+# nothing in the image."
+name: labellens
+
+x-backend-env: &backend-env
+  LABELLENS_ENVIRONMENT: ${LABELLENS_ENVIRONMENT:-production}
+  LABELLENS_SECRET_KEY: ${LABELLENS_SECRET_KEY:?LABELLENS_SECRET_KEY must be set}
+  LABELLENS_DATABASE_URL: ${LABELLENS_DATABASE_URL:?LABELLENS_DATABASE_URL must be set}
+  LABELLENS_REDIS_URL: ${LABELLENS_REDIS_URL:?LABELLENS_REDIS_URL must be set}
+  LABELLENS_COOKIE_SECURE: "true"
+  LABELLENS_STORAGE_ENDPOINT_URL: ${LABELLENS_STORAGE_ENDPOINT_URL:-}
+  LABELLENS_STORAGE_BUCKET: ${LABELLENS_STORAGE_BUCKET:?LABELLENS_STORAGE_BUCKET must be set}
+  LABELLENS_STORAGE_ACCESS_KEY: ${LABELLENS_STORAGE_ACCESS_KEY:?LABELLENS_STORAGE_ACCESS_KEY must be set}
+  LABELLENS_STORAGE_SECRET_KEY: ${LABELLENS_STORAGE_SECRET_KEY:?LABELLENS_STORAGE_SECRET_KEY must be set}
+  LABELLENS_LLM_PROVIDER: ${LABELLENS_LLM_PROVIDER:-gemini}
+  LABELLENS_LLM_API_KEY: ${LABELLENS_LLM_API_KEY:-}
+  LABELLENS_LLM_MODEL: ${LABELLENS_LLM_MODEL:-gemini-3.8-flash}
+  LABELLENS_LLM_ESCALATION_MODEL: ${LABELLENS_LLM_ESCALATION_MODEL:-gemini-3.8-flash}
+  LABELLENS_OCR_FALLBACK_PROVIDER: ${LABELLENS_OCR_FALLBACK_PROVIDER:-null}
+  LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY: ${LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY:-}
+  LABELLENS_SENTRY_DSN: ${LABELLENS_SENTRY_DSN:-}
+  LABELLENS_CLAMD_HOST: ${LABELLENS_CLAMD_HOST:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-labellens}
+    expose: ["5432"]  # never published to the host - only `api`/`worker-*` reach it
+    volumes: ["pgdata:/var/lib/postgresql/data", "wal_archive:/wal_archive"]
+    command: >
+      postgres
+      -c archive_mode=on
+      -c wal_level=replica
+      -c archive_command='test ! -f /wal_archive/%f && cp %p /wal_archive/%f'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-labellens}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    expose: ["6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: runs to completion, then exits. `deploy.sh` waits for this
+  # (`docker compose run --rm migrate`) before touching `api`/`worker-*`,
+  # so the expand step of every pending migration is always live *before*
+  # the new code that might depend on it starts - and, since every
+  # migration here is expand/migrate/contract-disciplined (checked
+  # statically by `scripts/check_migration_discipline.py`), the *previous*
+  # app version (what a rollback redeploys) keeps working against the
+  # now-migrated schema too.
+  migrate:
+    image: ${REGISTRY:?REGISTRY must be set}/labellens-api:${IMAGE_TAG:?IMAGE_TAG must be set}
+    environment:
+      <<: *backend-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    image: ${REGISTRY:?REGISTRY must be set}/labellens-api:${IMAGE_TAG:?IMAGE_TAG must be set}
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    expose: ["8000"]  # only `caddy` reaches this directly
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-default:
+    image: ${REGISTRY:?REGISTRY must be set}/labellens-api:${IMAGE_TAG:?IMAGE_TAG must be set}
+    restart: unless-stopped
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: default
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-ocr:
+    image: ${REGISTRY:?REGISTRY must be set}/labellens-api:${IMAGE_TAG:?IMAGE_TAG must be set}
+    restart: unless-stopped
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: ocr
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-llm:
+    image: ${REGISTRY:?REGISTRY must be set}/labellens-api:${IMAGE_TAG:?IMAGE_TAG must be set}
+    restart: unless-stopped
+    command: python -m arq app.analysis.worker.WorkerSettings
+    environment:
+      <<: *backend-env
+      LABELLENS_WORKER_QUEUE: llm
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set to a real domain this deployment owns}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  wal_archive:
+  caddy_data:
+  caddy_config:

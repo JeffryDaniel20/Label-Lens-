@@ -73,6 +73,7 @@ markers = [
     "paddleocr: requires paddleocr/paddlepaddle installed (pip install '.[ocr]', Python <=3.13)",
     "redis: requires a live Redis server (set LABELLENS_TEST_REDIS_URL)",
     "llm: requires a live LLM provider credential (set LABELLENS_LLM_API_KEY)",
+    "google_vision: requires a live Google Cloud Vision credential (set LABELLENS_OCR_FALLBACK_GOOGLE_VISION_API_KEY)",
     "weasyprint: requires WeasyPrint's native Pango/cairo/gdk-pixbuf libraries (present in the Docker image; install the GTK3 runtime to run locally on Windows)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
